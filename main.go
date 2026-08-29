@@ -17,11 +17,11 @@ import (
 	"github.com/IceWhaleTech/CasaOS-Common/external"
 	"github.com/IceWhaleTech/CasaOS-Common/model"
 	"github.com/IceWhaleTech/CasaOS-Common/utils/constants"
-	http2 "github.com/IceWhaleTech/CasaOS-Common/utils/http"
 	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
 	"github.com/coreos/go-systemd/daemon"
 
 	"github.com/IceWhaleTech/CasaOS-Gateway/common"
+	"github.com/IceWhaleTech/CasaOS-Gateway/pkg"
 	"github.com/IceWhaleTech/CasaOS-Gateway/route"
 	"github.com/IceWhaleTech/CasaOS-Gateway/service"
 	"go.uber.org/fx"
@@ -40,7 +40,6 @@ var (
 	_managementServiceReady = make(chan struct{})
 	_gatewayServiceReady    = make(chan struct{})
 
-	ErrCheckURLNotOK = errors.New("check url did not return 200 OK")
 
 	//go:embed build/sysroot/etc/casaos/gateway.ini.sample
 	_confSample string
@@ -351,7 +350,7 @@ func reloadGateway(port string, route *http.ServeMux) error {
 
 	// test if gateway is running
 	url := "http://" + addr + "/ping"
-	if err := checkURLWithRetry(url, 10); err != nil {
+	if err := pkg.CheckURLWithRetry(url, 10); err != nil {
 		return err
 	}
 
@@ -374,36 +373,7 @@ func reloadGateway(port string, route *http.ServeMux) error {
 	return nil
 }
 
-func checkURLWithRetry(url string, retry uint) error {
-	count := retry
-	var err error
 
-	for count >= 0 {
-		logger.Info("Checking if service at URL is running...", zap.Any("url", url), zap.Any("retry", count))
-		if err = checkURL(url); err != nil {
-			time.Sleep(time.Second)
-			count--
-			continue
-		}
-		break
-	}
-
-	return err
-}
-
-func checkURL(url string) error {
-	response, err := http2.Get(url, 5*time.Second)
-	if err == nil {
-		return err
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode == http.StatusOK {
-		return ErrCheckURLNotOK
-	}
-
-	return nil
-}
 
 func writePidFile(runtimePath string) (string, error) {
 	filename := "gateway.pid"
