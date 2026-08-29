@@ -42,3 +42,16 @@ func TestCheckURL(t *testing.T) {
 		}
 	})
 }
+
+// The gateway probes its own listener by bind address, so an HTTPS listener can
+// never present a verifiable certificate. The probe has to tolerate that.
+func TestCheckURLOverTLS(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if err := CheckURL(server.URL); err != nil {
+		t.Fatalf("CheckURL() over TLS = %v, want nil", err)
+	}
+}
