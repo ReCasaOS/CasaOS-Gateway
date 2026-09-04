@@ -34,9 +34,10 @@ var (
 	commit = "private build"
 	date   = "private build"
 
-	_state      *service.State
-	_gateway    *http.Server
-	_gatewayTLS common.TLSConfig
+	_state          *service.State
+	_gateway        *http.Server
+	_gatewayTLS     common.TLSConfig
+	_gatewayAddress string
 
 	_managementServiceReady = make(chan struct{})
 	_gatewayServiceReady    = make(chan struct{})
@@ -105,6 +106,8 @@ func init() {
 		CertFile: config.GetString(common.ConfigKeyGatewayTLSCert),
 		KeyFile:  config.GetString(common.ConfigKeyGatewayTLSKey),
 	}
+
+	_gatewayAddress = config.GetString(common.ConfigKeyGatewayAddress)
 
 	if err := _state.SetWWWPath(*wwwPathFlag); err != nil {
 		logger.Error("Failed to set www path", zap.Any("error", err), zap.String("wwwpath", *wwwPathFlag))
@@ -253,7 +256,7 @@ func run(
 					for _, p := range portsToCheck {
 						port = fmt.Sprintf("%d", p)
 						logger.Info("Checking if port is available...", zap.Any("port", port))
-						if listener, err := net.Listen("tcp", net.JoinHostPort("", port)); err == nil {
+						if listener, err := net.Listen("tcp", net.JoinHostPort(_gatewayAddress, port)); err == nil {
 							if err = listener.Close(); err != nil {
 								logger.Error("Failed to close listener", zap.Any("error", err), zap.Any("port", port))
 								continue
@@ -323,7 +326,9 @@ func run(
 }
 
 func reloadGateway(port string, route *http.ServeMux) error {
-	listener, err := net.Listen("tcp", net.JoinHostPort("", port))
+	// An IPv6 link-local address with a zone (fe80::1%eth0) binds, but the
+	// health check URL below cannot carry the zone - use a global/ULA address.
+	listener, err := net.Listen("tcp", net.JoinHostPort(_gatewayAddress, port))
 	if err != nil {
 		return err
 	}

@@ -3,5 +3,6 @@ runtimepath=/var/run/casaos
 
 [gateway]
 port=
+address=
 tlscert=
 tlskey=

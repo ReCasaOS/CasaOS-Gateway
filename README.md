@@ -19,16 +19,23 @@ $HOME/.casaos/gateway.ini
 /etc/casaos/gateway.ini
 ```
 
-See [gateway.ini.sample](./build/etc/casaos/gateway.ini.sample) for default configuration.
+See [gateway.ini.sample](./build/sysroot/etc/casaos/gateway.ini.sample) for default configuration.
+
+The public port binds to every interface by default. Set `address` to bind it to one interface only:
+
+```ini
+[gateway]
+port=80
+address=10.1.1.5
+```
+
+Leave `address` empty, the default, to keep listening on all of them. The management API always stays on `127.0.0.1`.
 
 ## Running
 
-Once running, gateway address and management address will be available in the files under `RuntimePath`  specified in configuration.
+Once running, the management address will be available in the file under `RuntimePath`  specified in configuration.
 
 ```bash
-$ cat /var/run/casaos/gateway.url 
-[::]:8080 # port is specified in configuration
-
 $ cat /var/run/casaos/management.url 
 [::]:34703 # port is randomly assigned
 ```

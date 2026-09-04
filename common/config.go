@@ -15,6 +15,9 @@ const (
 	ConfigKeyLogSaveName = "gateway.LogSaveName"
 	ConfigKeyLogFileExt  = "gateway.LogFileExt"
 	ConfigKeyGatewayPort = "gateway.Port"
+	// Interface the public gateway port binds to. Empty, the default, binds
+	// every interface (dual-stack [::]), which is what CasaOS has always done.
+	ConfigKeyGatewayAddress = "gateway.Address"
 	// Both must be set for the gateway to serve HTTPS. Left empty, it serves
 	// plain HTTP, which is the default and what CasaOS has always done.
 	ConfigKeyGatewayTLSCert = "gateway.TLSCert"
