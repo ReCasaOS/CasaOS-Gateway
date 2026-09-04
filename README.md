@@ -1,82 +1,76 @@
-# CasaOS-Gateway
+# CasaOS Gateway
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/IceWhaleTech/CasaOS-Gateway.svg)](https://pkg.go.dev/github.com/IceWhaleTech/CasaOS-Gateway) [![Go Report Card](https://goreportcard.com/badge/github.com/IceWhaleTech/CasaOS-Gateway)](https://goreportcard.com/report/github.com/IceWhaleTech/CasaOS-Gateway) [![goreleaser](https://github.com/IceWhaleTech/CasaOS-Gateway/actions/workflows/release.yml/badge.svg)](https://github.com/IceWhaleTech/CasaOS-Gateway/actions/workflows/release.yml) [![codecov](https://codecov.io/gh/IceWhaleTech/CasaOS-Gateway/branch/main/graph/badge.svg?token=5JIHXF1RJ4)](https://codecov.io/gh/IceWhaleTech/CasaOS-Gateway)
+The gateway is the only CasaOS service bound to a public port. Every other component — the system API, app management, user accounts, the message bus, local storage — listens on loopback and registers a path prefix here; the gateway forwards each request to whichever service claimed the longest matching prefix. It also serves the dashboard's files.
 
-CasaOS Gateway is a dynamic API gateway service that can be used to expose APIs from different other HTTP based services.
+This repository is part of the **inkly distribution of CasaOS**, a maintained release of the project after upstream [IceWhaleTech/CasaOS-Gateway](https://github.com/IceWhaleTech/CasaOS-Gateway) stopped shipping in 2025. It descends from [alvins82's fork](https://github.com/alvins82/CasaOS-Gateway), whose Ubuntu 26 fix to the setup script is still in here.
 
-This gateway service comes with a simple management API for other services to register their APIs by route paths. A HTTP request arrived at gateway port will be forwarded to the service that is registered for the route path.
+## What it runs
 
-> As a best practice, a service behind this gateway should bind to localhost (`127.0.0.1` for IPv4, `::1` for IPv6) ONLY, so no external network access is allowed.
+Three listeners, from one process:
+
+- **The public port** — the proxy itself, plus `GET /ping`. Paths are matched longest first, so a route on `/v1/apps` is not swallowed by one on `/v1`. `X-Forwarded-For` and `X-Real-IP` are rewritten before forwarding, so a service behind the gateway sees the address the connection actually came from rather than one a client claimed.
+- **The management API**, on `127.0.0.1` at a port the kernel assigns. `GET` and `POST /v1/gateway/routes` list and register routes; `GET` and `PUT /v1/gateway/port` read and change the public port. The two writes require a CasaOS JWT unless the request comes from loopback. The address is written to `/var/run/casaos/management.url`, which is how the other services find it, and the port endpoint is also proxied on the public port under `/v1/gateway/port`.
+- **The static server**, on `127.0.0.1` at another assigned port, serving the dashboard from the directory given by `-w`, which the shipped systemd unit leaves at its default of `/var/lib/casaos/www`, and registered as the route `/`. Its address goes to `/var/run/casaos/static.url`.
+
+Changing the port opens the new listener, waits for it to answer `/ping`, and stops the old one a second later so requests already in flight still get a response. Registered routes are kept in `/var/run/casaos/routes.json`.
+
+## Install
+
+Components are not installed individually. The installer places all of them:
+
+```sh
+curl -fsSL https://github.com/inkly/CasaOS-Install/releases/latest/download/install.sh | sudo bash
+```
+
+[CasaOS-Install](https://github.com/inkly/CasaOS-Install#readme) describes what a release contains and how it is built.
 
 ## Configuration
 
-Upon launching, it will search for `gateway.ini` file in the following order:
-
-```bash
-./gateway.ini
-./conf/gateway.ini
-$HOME/.casaos/gateway.ini
-/etc/casaos/gateway.ini
-```
-
-See [gateway.ini.sample](./build/sysroot/etc/casaos/gateway.ini.sample) for default configuration.
-
-The public port binds to every interface by default. Set `address` to bind it to one interface only:
+`/etc/casaos/gateway.ini`, written from [the sample](./build/sysroot/etc/casaos/gateway.ini.sample) on first start if it does not exist:
 
 ```ini
+[common]
+runtimepath=/var/run/casaos
+
 [gateway]
-port=80
-address=10.1.1.5
+port=
+address=
+tlscert=
+tlskey=
 ```
 
-Leave `address` empty, the default, to keep listening on all of them. The management API always stays on `127.0.0.1`.
+`port` is the public port. Left empty, the service takes the first free port from 80–89, then 8080–8089, and writes its choice back to this file; changing the port from the dashboard rewrites it too.
 
-## Running
+`address` is the interface that port binds to. Empty, the default, binds every interface as dual-stack `[::]`. Set it to one address to keep the dashboard off an untrusted network without a firewall rule. The management and static listeners stay on `127.0.0.1` either way.
 
-Once running, the management address will be available in the file under `RuntimePath`  specified in configuration.
+`tlscert` and `tlskey` are a certificate and private key you supply. With both set the gateway serves HTTPS, with neither it serves plain HTTP. Half a pair falls back to HTTP rather than leaving a box unreachable through the only thing that serves its UI.
 
-```bash
-$ cat /var/run/casaos/management.url 
-[::]:34703 # port is randomly assigned
+The file is looked for in the working directory, then `./conf`, then `$CASAOS_CONFIG_PATH` if it is set, then `/etc/casaos`. Logs are written to `/var/log/casaos/gateway.log`.
+
+A service behind this gateway should bind loopback only — `127.0.0.1`, or `::1` — since the gateway is the part meant to be reachable.
+
+## What this fork changed
+
+- **TLS with an administrator-supplied certificate**, the `tlscert` and `tlskey` keys above. The key pair is parsed before the listener is swapped, so a bad certificate fails the reload with an error instead of killing the serving goroutine once the old listener is already gone. There is no ACME and no self-signed generation: automatic issuance needs port 80 reachable from the internet or registrar credentials, which belongs in a reverse proxy. This covers the bring-your-own-certificate half of [CasaOS #1074](https://github.com/IceWhaleTech/CasaOS/issues/1074).
+- **`address=`, binding the public port to one interface** (v0.4.41). Both bind sites were hard-wired to every interface before. The idea comes from [CasaOS-Gateway #56](https://github.com/IceWhaleTech/CasaOS-Gateway/issues/56), rewritten smaller: no state plumbing, and no `gateway.url` file, which nothing ever read and which the code had never written.
+- **A health check that works.** Every branch of it was inverted: it reported success without looking at the status code, reported failure when the status *was* 200 OK, and dereferenced a nil response on the unreachable path, so a service that was not up yet panicked the gateway instead of being retried — and the retry loop never retried anything. It now lives in `pkg/`, with a test.
+- **A release pipeline that can run here.** Upstream's workflow called an IceWhale reusable workflow needing Aliyun credentials and published to the `IceWhaleTech` organisation, so a fork could never cut a release. It is a self-contained job now: it runs the tests, cross-builds static binaries for amd64, arm64 and arm/v7, and publishes the tarballs with the `checksums.txt` the installer verifies against.
+- **Ubuntu 26 setup**, inherited from alvins82. The setup script picks its per-distribution script by walking a candidate list — `ID/VERSION_CODENAME`, then `ID`, then each entry of `ID_LIKE` — and says which OS it could not place when none of them exists, in place of nested `pushd` fallbacks that did not resolve on Ubuntu 26.
+
+## Development
+
+Go, as declared in `go.mod`. Build, vet and test:
+
+```sh
+go build ./...
+go vet ./...
+go test ./...
 ```
 
-## Example
+Running the binary from a checkout needs a `gateway.ini` it can find and a writable `runtimepath`; `go test` covers the config loading, the TLS configuration, the health check, the management routes and route persistence without either.
 
-Assuming that
+## Licence and credits
 
-- the management API is running on port `34703`
-- the gateway is running on port `8080`
-- some API running at `http://localhost:12345/ping` that simply returns `pong`.
+Apache License 2.0 — see [LICENSE](LICENSE), kept as upstream shipped it. It is the stock Apache text: neither the licence file nor any source file carries a copyright line, and none has been added here.
 
-Then register the API as follows:
-
-- POST `http://localhost:34703/v1/gateway/routes`
-
-  ```json
-  {
-          "path": "/ping",
-          "target": "http://localhost:12345"
-  }
-  ```
-
-  or in command line:
-
-  ```bash
-  $ curl 'localhost:34703/v1/gateway/routes' --data-raw '
-      {"path": "/ping", "target": "http://localhost:12345"}
-    '
-  ```
-
-Now run
-
-```bash
-$ curl localhost:8080/ping
-{"message":"pong"}
-```
-
-... which is equivalent as
-
-```bash
-$ curl localhost:12345/ping
-{"message":"pong"}
-```
+CasaOS and this gateway are the work of IceWhale and its contributors; the Ubuntu 26 setup fallback is [alvins82](https://github.com/alvins82/CasaOS-Gateway)'s. CasaOS is a mark of IceWhale, used here to say what this is a release of and nothing more.
