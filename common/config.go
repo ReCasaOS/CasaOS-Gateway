@@ -15,7 +15,11 @@ const (
 	ConfigKeyLogSaveName = "gateway.LogSaveName"
 	ConfigKeyLogFileExt  = "gateway.LogFileExt"
 	ConfigKeyGatewayPort = "gateway.Port"
-	ConfigKeyRuntimePath = "common.RuntimePath"
+	// Both must be set for the gateway to serve HTTPS. Left empty, it serves
+	// plain HTTP, which is the default and what CasaOS has always done.
+	ConfigKeyGatewayTLSCert = "gateway.TLSCert"
+	ConfigKeyGatewayTLSKey  = "gateway.TLSKey"
+	ConfigKeyRuntimePath    = "common.RuntimePath"
 
 	GatewayName       = "gateway"
 	GatewayConfigType = "ini"
