@@ -46,20 +46,18 @@ func CheckURL(url string) error {
 }
 
 // CheckURLWithRetry polls url once a second until it answers 200 OK or the
-// retries run out, and returns the last error.
+// retries run out, and returns the last error. retry counts the retries after
+// the first attempt, so the url is checked retry+1 times at most.
 func CheckURLWithRetry(url string, retry uint) error {
-	count := retry
 	var err error
 
-	for count >= 0 {
+	// count is unsigned: stop on zero rather than after decrementing it, or it
+	// underflows to a number of retries no listener will ever outlast.
+	for count := retry; ; count-- {
 		logger.Info("Checking if service at URL is running...", zap.Any("url", url), zap.Any("retry", count))
-		if err = CheckURL(url); err != nil {
-			time.Sleep(time.Second)
-			count--
-			continue
+		if err = CheckURL(url); err == nil || count == 0 {
+			return err
 		}
-		break
+		time.Sleep(time.Second)
 	}
-
-	return err
 }

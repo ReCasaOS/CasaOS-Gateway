@@ -5,7 +5,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
 )
+
+// CheckURLWithRetry logs every attempt, and CasaOS-Common's logger dereferences a
+// nil *zap.Logger until it is initialised. main does that at startup, tests have
+// to do it themselves, as the route and service test packages already do.
+func init() {
+	logger.LogInitConsoleOnly()
+}
 
 func TestCheckURL(t *testing.T) {
 	t.Run("a 200 response means the service is up", func(t *testing.T) {
@@ -41,6 +51,26 @@ func TestCheckURL(t *testing.T) {
 			t.Fatal("CheckURL() = nil, want a transport error")
 		}
 	})
+}
+
+// The retry count is a uint that used to be decremented past zero, so a listener
+// that never answers kept the loop (and reloadGateway with it) running forever.
+func TestCheckURLWithRetryGivesUp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := server.URL
+	server.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- CheckURLWithRetry(url, 1) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("CheckURLWithRetry() = nil, want the last error")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("CheckURLWithRetry() never gave up")
+	}
 }
 
 // The gateway probes its own listener by bind address, so an HTTPS listener can
