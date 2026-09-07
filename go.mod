@@ -2,7 +2,6 @@ module github.com/inkly/CasaOS-Gateway
 
 go 1.21
 
-toolchain go1.23.4
 
 require (
 	github.com/inkly/CasaOS-Common v0.4.22

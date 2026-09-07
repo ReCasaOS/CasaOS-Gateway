@@ -193,7 +193,7 @@ changelog:
       - "^test:"
 release:
   github:
-    owner: IceWhaleTech
+    owner: inkly
     name: CasaOS-Gateway
   draft: true
   prerelease: auto
