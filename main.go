@@ -14,11 +14,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coreos/go-systemd/daemon"
 	"github.com/inkly/CasaOS-Common/external"
 	"github.com/inkly/CasaOS-Common/model"
 	"github.com/inkly/CasaOS-Common/utils/constants"
 	"github.com/inkly/CasaOS-Common/utils/logger"
-	"github.com/coreos/go-systemd/daemon"
 
 	"github.com/inkly/CasaOS-Gateway/common"
 	"github.com/inkly/CasaOS-Gateway/pkg"
