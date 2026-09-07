@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/IceWhaleTech/CasaOS-Common/model"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
+	"github.com/inkly/CasaOS-Common/model"
+	"github.com/inkly/CasaOS-Common/utils/logger"
 	"go.uber.org/zap"
 )
 

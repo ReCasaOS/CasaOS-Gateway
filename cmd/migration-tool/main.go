@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
-	interfaces "github.com/IceWhaleTech/CasaOS-Common"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/systemctl"
-	"github.com/IceWhaleTech/CasaOS-Gateway/common"
+	interfaces "github.com/inkly/CasaOS-Common"
+	"github.com/inkly/CasaOS-Common/utils/systemctl"
+	"github.com/inkly/CasaOS-Gateway/common"
 )
 
 const (

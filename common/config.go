@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/viper"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/constants"
+	"github.com/inkly/CasaOS-Common/utils/constants"
 )
 
 const (
