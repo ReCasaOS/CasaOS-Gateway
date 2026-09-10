@@ -1,10 +1,10 @@
 # CasaOS Gateway
 
-> **Not affiliated with IceWhale.** An independent, community-maintained distribution of CasaOS, not produced or endorsed by Shanghai IceWhale Technology Limited. CASAOS is their trademark, used here only to say what this is a release of. The original project is [IceWhaleTech/CasaOS](https://github.com/IceWhaleTech/CasaOS); report problems with this distribution at [inkly/CasaOS/issues](https://github.com/ReCasaOS/CasaOS/issues).
+> **Not affiliated with IceWhale.** An independent, community-maintained distribution of CasaOS, not produced or endorsed by Shanghai IceWhale Technology Limited. CASAOS is their trademark, used here only to say what this is a release of. The original project is [IceWhaleTech/CasaOS](https://github.com/IceWhaleTech/CasaOS); report problems with this distribution at [ReCasaOS/CasaOS/issues](https://github.com/ReCasaOS/CasaOS/issues).
 
 The gateway is the only CasaOS service bound to a public port. Every other component — the system API, app management, user accounts, the message bus, local storage — listens on loopback and registers a path prefix here; the gateway forwards each request to whichever service claimed the longest matching prefix. It also serves the dashboard's files.
 
-This repository is part of the **inkly distribution of CasaOS**, a maintained release of the project after upstream [IceWhaleTech/CasaOS-Gateway](https://github.com/IceWhaleTech/CasaOS-Gateway) stopped shipping in 2025. It descends from [alvins82's fork](https://github.com/alvins82/CasaOS-Gateway), whose Ubuntu 26 fix to the setup script is still in here.
+This repository is part of **ReCasaOS**, a maintained release of the project after upstream [IceWhaleTech/CasaOS-Gateway](https://github.com/IceWhaleTech/CasaOS-Gateway) stopped shipping in 2025. It descends from [alvins82's fork](https://github.com/alvins82/CasaOS-Gateway), whose Ubuntu 26 fix to the setup script is still in here.
 
 ## What it runs
 
