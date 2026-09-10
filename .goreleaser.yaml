@@ -211,7 +211,7 @@ changelog:
       - "^test:"
 release:
   github:
-    owner: inkly
+    owner: ReCasaOS
     name: CasaOS-Gateway
   draft: false
   prerelease: auto

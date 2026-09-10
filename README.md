@@ -1,6 +1,6 @@
 # CasaOS Gateway
 
-> **Not affiliated with IceWhale.** An independent, community-maintained distribution of CasaOS, not produced or endorsed by Shanghai IceWhale Technology Limited. CASAOS is their trademark, used here only to say what this is a release of. The original project is [IceWhaleTech/CasaOS](https://github.com/IceWhaleTech/CasaOS); report problems with this distribution at [inkly/CasaOS/issues](https://github.com/inkly/CasaOS/issues).
+> **Not affiliated with IceWhale.** An independent, community-maintained distribution of CasaOS, not produced or endorsed by Shanghai IceWhale Technology Limited. CASAOS is their trademark, used here only to say what this is a release of. The original project is [IceWhaleTech/CasaOS](https://github.com/IceWhaleTech/CasaOS); report problems with this distribution at [inkly/CasaOS/issues](https://github.com/ReCasaOS/CasaOS/issues).
 
 The gateway is the only CasaOS service bound to a public port. Every other component — the system API, app management, user accounts, the message bus, local storage — listens on loopback and registers a path prefix here; the gateway forwards each request to whichever service claimed the longest matching prefix. It also serves the dashboard's files.
 
@@ -21,10 +21,10 @@ Changing the port opens the new listener, waits for it to answer `/ping`, and st
 Components are not installed individually. The installer places all of them:
 
 ```sh
-curl -fsSL https://github.com/inkly/CasaOS-Install/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/ReCasaOS/CasaOS-Install/releases/latest/download/install.sh | sudo bash
 ```
 
-[CasaOS-Install](https://github.com/inkly/CasaOS-Install#readme) describes what a release contains and how it is built.
+[CasaOS-Install](https://github.com/ReCasaOS/CasaOS-Install#readme) describes what a release contains and how it is built.
 
 ## Configuration
 
