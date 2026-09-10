@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/inkly/CasaOS-Common/model"
-	"github.com/inkly/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS-Common/model"
+	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"gotest.tools/assert"
 )
 

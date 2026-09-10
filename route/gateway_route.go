@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/inkly/CasaOS-Common/utils/logger"
-	"github.com/inkly/CasaOS-Gateway/service"
+	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS-Gateway/service"
 	"go.uber.org/zap"
 )
 

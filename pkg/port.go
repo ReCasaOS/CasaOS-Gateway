@@ -3,7 +3,7 @@ package pkg
 import (
 	"errors"
 
-	"github.com/inkly/CasaOS-Gateway/common"
+	"github.com/ReCasaOS/CasaOS-Gateway/common"
 )
 
 func GetGatewayPort() (int, error) {

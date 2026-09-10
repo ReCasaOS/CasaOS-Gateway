@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inkly/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 )
 
 // CheckURLWithRetry logs every attempt, and CasaOS-Common's logger dereferences a

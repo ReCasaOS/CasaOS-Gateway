@@ -1,10 +1,9 @@
-module github.com/inkly/CasaOS-Gateway
+module github.com/ReCasaOS/CasaOS-Gateway
 
 go 1.21
 
-
 require (
-	github.com/inkly/CasaOS-Common v0.4.22
+	github.com/ReCasaOS/CasaOS-Common v0.4.23
 	github.com/labstack/echo/v4 v4.12.0
 	github.com/spf13/viper v1.18.2
 	go.uber.org/fx v1.20.1
