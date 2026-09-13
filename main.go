@@ -37,6 +37,7 @@ var (
 	_state          *service.State
 	_gateway        *http.Server
 	_gatewayTLS     common.TLSConfig
+	_httpsPort      string
 	_gatewayAddress string
 
 	_managementServiceReady = make(chan struct{})
@@ -108,6 +109,7 @@ func init() {
 	}
 
 	_gatewayAddress = config.GetString(common.ConfigKeyGatewayAddress)
+	_httpsPort = config.GetString(common.ConfigKeyGatewayHTTPSPort)
 
 	if err := _state.SetWWWPath(*wwwPathFlag); err != nil {
 		logger.Error("Failed to set www path", zap.Any("error", err), zap.String("wwwpath", *wwwPathFlag))
@@ -288,6 +290,8 @@ func run(
 					return err
 				}
 
+				serveSelfSignedHTTPS(route)
+
 				_gatewayServiceReady <- struct{}{}
 
 				return nil
@@ -435,4 +439,51 @@ func checkPrequisites(state *service.State) error {
 	}
 
 	return nil
+}
+
+// serveSelfSignedHTTPS serves the same routes over HTTPS on the HTTPS port,
+// with a certificate the gateway makes for itself, beside the plain port --
+// unless the administrator supplied a certificate, in which case the plain port
+// already serves HTTPS, or turned the port off. Nothing here is fatal: a port
+// somebody else holds is logged and the plain port carries on.
+func serveSelfSignedHTTPS(route *http.ServeMux) {
+	if _gatewayTLS.Enabled() {
+		return
+	}
+
+	port := _httpsPort
+	if port == "" {
+		port = common.DefaultHTTPSPort
+	}
+	if port == "0" {
+		logger.Info("HTTPS with a self-signed certificate is turned off (httpsport=0)")
+		return
+	}
+
+	pair, err := common.SelfSigned(filepath.Join(constants.DefaultDataPath, "tls"))
+	if err != nil {
+		logger.Error("could not make the gateway's own certificate; HTTPS is not served", zap.Error(err))
+		return
+	}
+
+	listener, err := net.Listen("tcp", net.JoinHostPort(_gatewayAddress, port))
+	if err != nil {
+		logger.Warn("the HTTPS port is not available; HTTPS is not served", zap.String("port", port), zap.Error(err))
+		return
+	}
+
+	server := &http.Server{
+		Addr:              listener.Addr().String(),
+		Handler:           route,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		if err := server.ServeTLS(listener, pair.CertFile, pair.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("Error when serving HTTPS", zap.Error(err), zap.String("address", server.Addr))
+		}
+	}()
+
+	logger.Info("HTTPS is listening with the gateway's own certificate...",
+		zap.String("address", server.Addr), zap.String("certificate", pair.CertFile))
 }

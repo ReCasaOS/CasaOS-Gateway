@@ -22,6 +22,10 @@ const (
 	// plain HTTP, which is the default and what CasaOS has always done.
 	ConfigKeyGatewayTLSCert = "gateway.TLSCert"
 	ConfigKeyGatewayTLSKey  = "gateway.TLSKey"
+	// The port HTTPS is served on with a certificate the gateway makes for
+	// itself, when no certificate is supplied above. Empty is the default,
+	// 443; "0" turns it off.
+	ConfigKeyGatewayHTTPSPort = "gateway.HTTPSPort"
 	ConfigKeyRuntimePath    = "common.RuntimePath"
 
 	GatewayName       = "gateway"

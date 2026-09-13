@@ -39,6 +39,7 @@ port=
 address=
 tlscert=
 tlskey=
+httpsport=
 ```
 
 `port` is the public port. Left empty, the service takes the first free port from 80–89, then 8080–8089, and writes its choice back to this file; changing the port from the dashboard rewrites it too.
@@ -53,6 +54,7 @@ A service behind this gateway should bind loopback only — `127.0.0.1`, or `::1
 
 ## What this fork changed
 
+- **HTTPS without configuring anything** (v0.4.27). When no certificate is supplied, the gateway makes one for itself on first start (`/var/lib/casaos/tls/gateway.crt`, ten years, this box's hostname and the loopback addresses) and serves the same routes over HTTPS on `httpsport`, 443 unless the configuration says otherwise, beside the plain port. Self-signed, so the browser warns once; the plain port is still there, and `httpsport=0` turns the second one off. A port somebody else holds is logged and skipped. The dashboard was readable on the wire and denied the browser APIs that need a secure context, the clipboard first among them.
 - **TLS with an administrator-supplied certificate**, the `tlscert` and `tlskey` keys above. The key pair is parsed before the listener is swapped, so a bad certificate fails the reload with an error instead of killing the serving goroutine once the old listener is already gone. There is no ACME and no self-signed generation: automatic issuance needs port 80 reachable from the internet or registrar credentials, which belongs in a reverse proxy. This covers the bring-your-own-certificate half of [CasaOS #1074](https://github.com/IceWhaleTech/CasaOS/issues/1074).
 - **The secret of this boot** (v0.4.26). The gateway writes a random secret to the runtime path at every start, readable by root only, before it writes its management address; every service asks for it on loopback instead of trusting the interface, since a container on the host network or any local account reaches the same addresses. The management API, which asked for a token from the network and nothing from loopback, takes the same rule: the secret, or a person's token.
 - **`address=`, binding the public port to one interface** (v0.4.41). Both bind sites were hard-wired to every interface before. The idea comes from [CasaOS-Gateway #56](https://github.com/IceWhaleTech/CasaOS-Gateway/issues/56), rewritten smaller: no state plumbing, and no `gateway.url` file, which nothing ever read and which the code had never written.
