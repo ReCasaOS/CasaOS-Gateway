@@ -204,6 +204,12 @@ func run(
 					ReadHeaderTimeout: 5 * time.Second,
 				}
 
+				// The secret of this boot goes down before the address does: a
+				// service that finds the address finds the secret too.
+				if err := external.WriteInternalSecret(_state.GetRuntimePath()); err != nil {
+					return err
+				}
+
 				urlFilePath, err := writeAddressFile(_state.GetRuntimePath(), external.ManagementURLFilename, "http://"+listener.Addr().String())
 				if err != nil {
 					return err

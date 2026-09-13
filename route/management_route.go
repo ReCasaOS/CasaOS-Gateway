@@ -10,6 +10,7 @@ import (
 	"github.com/ReCasaOS/CasaOS-Common/utils/common_err"
 	"github.com/ReCasaOS/CasaOS-Common/utils/jwt"
 	"github.com/ReCasaOS/CasaOS-Gateway/service"
+	echojwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	echo_middleware "github.com/labstack/echo/v4/middleware"
 )
@@ -52,7 +53,31 @@ func (m *ManagementRoute) GetRoute() http.Handler {
 func (m *ManagementRoute) buildV1Group(e *echo.Echo) {
 	v1Group := e.Group("/v1")
 
-	v1Group.Use()
+	// Routes register here and the dashboard changes the port here (through
+	// the gateway, which proxies /v1/gateway/port to this server). The first
+	// is a service with this boot's internal secret; the second is a person
+	// with a token. Anything else on the box used to be able to re-route the
+	// dashboard's API, or move its port, with a plain request to loopback.
+	v1Group.Use(echojwt.WithConfig(echojwt.Config{
+		Skipper: func(c echo.Context) bool {
+			return external.IsInternalRequest(c.RealIP(), c.Request().Header.Get(echo.HeaderAuthorization), m.management.State.GetRuntimePath())
+		},
+		ParseTokenFunc: func(c echo.Context, token string) (interface{}, error) {
+			valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(m.management.State.GetRuntimePath()) })
+			if err != nil || !valid {
+				return nil, echo.ErrUnauthorized
+			}
+
+			c.Request().Header.Set("user_id", strconv.Itoa(claims.ID))
+
+			return claims, nil
+		},
+		TokenLookupFuncs: []echo_middleware.ValuesExtractor{
+			func(c echo.Context) ([]string, error) {
+				return []string{c.Request().Header.Get(echo.HeaderAuthorization)}, nil
+			},
+		},
+	}))
 	{
 		m.buildV1RouteGroup(v1Group)
 	}
@@ -86,30 +111,7 @@ func (m *ManagementRoute) buildV1RouteGroup(v1Group *echo.Group) {
 				}
 
 				return ctx.NoContent(http.StatusCreated)
-			},
-			echo_middleware.JWTWithConfig(echo_middleware.JWTConfig{
-				Skipper: func(c echo.Context) bool {
-					return c.RealIP() == "::1" || c.RealIP() == "127.0.0.1"
-					// return true
-				},
-				ParseTokenFunc: func(token string, c echo.Context) (interface{}, error) {
-					valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(m.management.State.GetRuntimePath()) })
-					if err != nil || !valid {
-						return nil, echo.ErrUnauthorized
-					}
-					c.Request().Header.Set("user_id", strconv.Itoa(claims.ID))
-
-					return claims, nil
-				},
-				TokenLookupFuncs: []echo_middleware.ValuesExtractor{
-					func(c echo.Context) ([]string, error) {
-						if len(c.Request().Header.Get(echo.HeaderAuthorization)) > 0 {
-							return []string{c.Request().Header.Get(echo.HeaderAuthorization)}, nil
-						}
-						return []string{c.QueryParam("token")}, nil
-					},
-				},
-			}))
+			})
 
 		v1GatewayGroup.GET("/port", func(ctx echo.Context) error {
 			return ctx.JSON(http.StatusOK, model.Result{
@@ -141,29 +143,6 @@ func (m *ManagementRoute) buildV1RouteGroup(v1Group *echo.Group) {
 					Success: common_err.SUCCESS,
 					Message: common_err.GetMsg(common_err.SUCCESS),
 				})
-			},
-			echo_middleware.JWTWithConfig(echo_middleware.JWTConfig{
-				Skipper: func(c echo.Context) bool {
-					return c.RealIP() == "::1" || c.RealIP() == "127.0.0.1"
-					// return true
-				},
-				ParseTokenFunc: func(token string, c echo.Context) (interface{}, error) {
-					valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(m.management.State.GetRuntimePath()) })
-					if err != nil || !valid {
-						return nil, echo.ErrUnauthorized
-					}
-					c.Request().Header.Set("user_id", strconv.Itoa(claims.ID))
-
-					return claims, nil
-				},
-				TokenLookupFuncs: []echo_middleware.ValuesExtractor{
-					func(c echo.Context) ([]string, error) {
-						if len(c.Request().Header.Get(echo.HeaderAuthorization)) > 0 {
-							return []string{c.Request().Header.Get(echo.HeaderAuthorization)}, nil
-						}
-						return []string{c.QueryParam("token")}, nil
-					},
-				},
-			}))
+			})
 	}
 }

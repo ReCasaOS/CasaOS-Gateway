@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/labstack/echo/v4"
 
@@ -20,7 +23,15 @@ import (
 var (
 	_router http.Handler
 	_state  *service.State
+	_secret string
 )
+
+// asService makes a request what a service of this box sends: from loopback,
+// with the secret the gateway wrote for this boot.
+func asService(req *http.Request) {
+	req.RemoteAddr = "127.0.0.1:0"
+	req.Header.Set(echo.HeaderAuthorization, _secret)
+}
 
 func init() {
 	logger.LogInitConsoleOnly()
@@ -33,6 +44,14 @@ func setup(t *testing.T) func(t *testing.T) {
 	if err := _state.SetRuntimePath(tmpdir); err != nil {
 		t.Fatal(err)
 	}
+	if err := external.WriteInternalSecret(tmpdir); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(tmpdir, external.InternalSecretFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_secret = "Internal " + strings.TrimSpace(string(raw))
 
 	management := service.NewManagementService(_state)
 	managementRoute := NewManagementRoute(management)
@@ -51,6 +70,7 @@ func TestPing(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	req, _ := http.NewRequest(http.MethodGet, "/ping", nil)
+	asService(req)
 
 	_router.ServeHTTP(w, req)
 
@@ -69,7 +89,7 @@ func TestCreateRoute(t *testing.T) {
 	assert.NilError(t, err)
 
 	req, _ := http.NewRequest(http.MethodPost, "/v1/gateway/routes", bytes.NewReader(body))
-	req.RemoteAddr = "127.0.0.1:0"
+	asService(req)
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 
 	w := httptest.NewRecorder()
@@ -77,6 +97,7 @@ func TestCreateRoute(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, w.Code)
 
 	req, _ = http.NewRequest(http.MethodGet, "/v1/gateway/routes", nil)
+	asService(req)
 	w = httptest.NewRecorder()
 	_router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -113,7 +134,7 @@ func TestChangePort(t *testing.T) {
 	assert.NilError(t, err)
 
 	req, _ := http.NewRequest(http.MethodPut, "/v1/gateway/port", bytes.NewReader(body))
-	req.RemoteAddr = "127.0.0.1:0"
+	asService(req)
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 
 	w := httptest.NewRecorder()
@@ -124,6 +145,7 @@ func TestChangePort(t *testing.T) {
 
 	// get
 	req, _ = http.NewRequest(http.MethodGet, "/v1/gateway/port", nil)
+	asService(req)
 
 	w = httptest.NewRecorder()
 	_router.ServeHTTP(w, req)
@@ -152,7 +174,7 @@ func TestChangePortNegative(t *testing.T) {
 	assert.NilError(t, err)
 
 	req, _ := http.NewRequest(http.MethodPut, "/v1/gateway/port", bytes.NewReader(body))
-	req.RemoteAddr = "127.0.0.1:0"
+	asService(req)
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 
 	w := httptest.NewRecorder()
@@ -163,6 +185,7 @@ func TestChangePortNegative(t *testing.T) {
 
 	// get
 	req, _ = http.NewRequest(http.MethodGet, "/v1/gateway/port", nil)
+	asService(req)
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 
 	w = httptest.NewRecorder()
@@ -189,7 +212,7 @@ func TestChangePortNegative(t *testing.T) {
 	assert.NilError(t, err)
 
 	req, _ = http.NewRequest(http.MethodPut, "/v1/gateway/port", bytes.NewReader(body))
-	req.RemoteAddr = "127.0.0.1:0"
+	asService(req)
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 
 	w = httptest.NewRecorder()
@@ -200,6 +223,7 @@ func TestChangePortNegative(t *testing.T) {
 
 	// get
 	req, _ = http.NewRequest(http.MethodGet, "/v1/gateway/port", nil)
+	asService(req)
 
 	w = httptest.NewRecorder()
 	_router.ServeHTTP(w, req)
@@ -211,4 +235,33 @@ func TestChangePortNegative(t *testing.T) {
 	err = decoder.Decode(&result)
 	assert.NilError(t, err)
 	assert.Equal(t, expectedPort, result.Data)
+}
+
+// Loopback alone is any local process: a container on the host network, any
+// local account. Without the secret, the management API is a person's, with a
+// token.
+func TestLoopbackAloneIsNotAService(t *testing.T) {
+	defer setup(t)(t)
+
+	body, err := json.Marshal(&model.ChangePortRequest{Port: "123"})
+	assert.NilError(t, err)
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"changing the port", http.MethodPut, "/v1/gateway/port"},
+		{"registering a route", http.MethodPost, "/v1/gateway/routes"},
+		{"listing the routes", http.MethodGet, "/v1/gateway/routes"},
+	} {
+		req, _ := http.NewRequest(tc.method, tc.path, bytes.NewReader(body))
+		req.RemoteAddr = "127.0.0.1:0"
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+
+		w := httptest.NewRecorder()
+		_router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code, tc.name)
+	}
 }
