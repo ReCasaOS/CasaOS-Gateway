@@ -30,7 +30,3 @@ __debug_bin
 
 dist/
 /github
-node_modules
-yarn.lock
-generate
-openapitools.json
