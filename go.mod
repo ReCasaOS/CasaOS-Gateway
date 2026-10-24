@@ -3,7 +3,7 @@ module github.com/ReCasaOS/CasaOS-Gateway
 go 1.26.8
 
 require (
-	github.com/ReCasaOS/CasaOS-Common v0.4.26
+	github.com/ReCasaOS/CasaOS-Common v0.4.31
 	github.com/labstack/echo-jwt/v4 v4.4.0
 	github.com/labstack/echo/v4 v4.16.1
 	github.com/spf13/viper v1.18.2

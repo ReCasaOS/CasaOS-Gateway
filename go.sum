@@ -1,5 +1,5 @@
-github.com/ReCasaOS/CasaOS-Common v0.4.26 h1:aefnl58xQ4z0ga0+vBnQHmkG1/3fnd1C1W/EBFeAgvc=
-github.com/ReCasaOS/CasaOS-Common v0.4.26/go.mod h1:HjYCcRAVDa0c/IncJDof1sddCpze2esCTZt941Sk7LI=
+github.com/ReCasaOS/CasaOS-Common v0.4.31 h1:j0+PVY2suHW/StJ69MnDwBk+1rdS19ysxBuOsedK8Tc=
+github.com/ReCasaOS/CasaOS-Common v0.4.31/go.mod h1:HjYCcRAVDa0c/IncJDof1sddCpze2esCTZt941Sk7LI=
 github.com/benbjohnson/clock v1.3.1 h1:Heo0FGXzOxUHquZbraxt+tT7UXVDhesUQH5ISbsOkCQ=
 github.com/benbjohnson/clock v1.3.1/go.mod h1:J11/hYXuz8f4ySSvYwY0FKfm+ezbsZBKZxNJlLklBHA=
 github.com/cespare/xxhash/v2 v2.1.2/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
