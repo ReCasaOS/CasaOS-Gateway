@@ -62,22 +62,8 @@ func init() {
 
 	_state = service.NewState()
 
-	// create default config file if not exist
-	ConfigFilePath := filepath.Join(constants.DefaultConfigPath, common.GatewayName+"."+common.GatewayConfigType)
-	if _, err := os.Stat(ConfigFilePath); os.IsNotExist(err) {
-		fmt.Println("config file not exist, create it")
-		// create config file
-		file, err := os.Create(ConfigFilePath)
-		if err != nil {
-			panic(err)
-		}
-		defer file.Close()
-
-		// write default config
-		_, err = file.WriteString(_confSample)
-		if err != nil {
-			panic(err)
-		}
+	if err := common.EnsureGatewayConfig(_confSample); err != nil {
+		panic(err)
 	}
 
 	config, err := common.LoadConfig()

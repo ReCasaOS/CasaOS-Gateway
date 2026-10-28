@@ -48,7 +48,7 @@ httpsport=
 
 `tlscert` and `tlskey` are a certificate and private key you supply. With both set the gateway serves HTTPS, with neither it serves plain HTTP. Half a pair falls back to HTTP rather than leaving a box unreachable through the only thing that serves its UI.
 
-The file is looked for in the working directory, then `./conf`, then `$CASAOS_CONFIG_PATH` if it is set, then `/etc/casaos`. Logs are written to `/var/log/casaos/gateway.log`.
+The file is looked for in the working directory, then `./conf`, then `$CASAOS_CONFIG_PATH` if it is set, then `/etc/casaos`. `CASAOS_CONFIG_PATH` is the directory that contains `gateway.ini`. A missing file is created there when that variable is set, and in `/etc/casaos` when it is not. Logs are written to `/var/log/casaos/gateway.log`.
 
 A service behind this gateway should bind loopback only — `127.0.0.1`, or `::1` — since the gateway is the part meant to be reachable.
 
