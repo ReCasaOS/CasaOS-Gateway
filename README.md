@@ -76,6 +76,8 @@ go test ./...
 
 Running the binary from a checkout needs a `gateway.ini` it can find and a writable `runtimepath`; `go test` covers the config loading, the TLS configuration, the health check, the management routes and route persistence without either.
 
+The local process stack in CasaOS (`../CasaOS/dev/stack.sh`) sets `CASAOS_CONFIG_PATH` to a user-writable tree and binds `127.0.0.1:8081`. See that checkout's `dev/README.md`.
+
 ## Licence and credits
 
 Apache License 2.0 — see [LICENSE](LICENSE), kept as upstream shipped it. It is the stock Apache text: neither the licence file nor any source file carries a copyright line, and none has been added here.
