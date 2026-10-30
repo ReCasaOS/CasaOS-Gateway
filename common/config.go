@@ -63,3 +63,25 @@ func LoadConfig() (*viper.Viper, error) {
 
 	return config, nil
 }
+
+func GatewayConfigFilePath() string {
+	if p, ok := os.LookupEnv("CASAOS_CONFIG_PATH"); ok && p != "" {
+		return filepath.Join(p, GatewayName+"."+GatewayConfigType)
+	}
+	return filepath.Join(constants.DefaultConfigPath, GatewayName+"."+GatewayConfigType)
+}
+
+func EnsureGatewayConfig(sample string) error {
+	path := GatewayConfigFilePath()
+	_, err := os.Stat(path)
+	if err == nil {
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(sample), 0o600)
+}
