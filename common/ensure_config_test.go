@@ -55,6 +55,13 @@ func TestEnsureGatewayConfigCreatesUnderEnv(t *testing.T) {
 	if string(body) != sample {
 		t.Fatalf("wrote %q, want %q", body, sample)
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("mode %04o, want 0644", got)
+	}
 }
 
 func TestEnsureGatewayConfigDoesNotOverwrite(t *testing.T) {

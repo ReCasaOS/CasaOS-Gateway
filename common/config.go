@@ -83,5 +83,5 @@ func EnsureGatewayConfig(sample string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(sample), 0o600)
+	return os.WriteFile(path, []byte(sample), 0o644)
 }
