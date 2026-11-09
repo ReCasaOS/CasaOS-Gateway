@@ -309,3 +309,67 @@ func TestLoopbackAloneIsNotAService(t *testing.T) {
 		assert.Equal(t, http.StatusUnauthorized, w.Code, tc.name)
 	}
 }
+
+func hostCall(method, path, body string) *httptest.ResponseRecorder {
+	req, _ := http.NewRequest(method, path, strings.NewReader(body))
+	asService(req)
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+
+	w := httptest.NewRecorder()
+	_router.ServeHTTP(w, req)
+
+	return w
+}
+
+func TestPutGetDeleteHost(t *testing.T) {
+	defer setup(t)(t)
+
+	w := hostCall(http.MethodPut, "/v1/gateway/hosts", `{"host":"Jellyfin.MyBox.box.example.org","target":"http://127.0.0.1:8096"}`)
+	assert.Equal(t, http.StatusCreated, w.Code)
+
+	w = hostCall(http.MethodGet, "/v1/gateway/hosts", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, `[{"host":"jellyfin.mybox.box.example.org","target":"http://127.0.0.1:8096"}]`, strings.TrimSpace(w.Body.String()))
+
+	w = hostCall(http.MethodPut, "/v1/gateway/hosts", `{"host":"Jellyfin.MyBox.box.example.org","target":"http://127.0.0.1:8097"}`)
+	assert.Equal(t, http.StatusCreated, w.Code)
+
+	w = hostCall(http.MethodGet, "/v1/gateway/hosts", "")
+	assert.Equal(t, `[{"host":"jellyfin.mybox.box.example.org","target":"http://127.0.0.1:8097"}]`, strings.TrimSpace(w.Body.String()))
+
+	w = hostCall(http.MethodDelete, "/v1/gateway/hosts/jellyfin.mybox.box.example.org", "")
+	assert.Equal(t, http.StatusNoContent, w.Code)
+
+	w = hostCall(http.MethodGet, "/v1/gateway/hosts", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "[]", strings.TrimSpace(w.Body.String()))
+
+	w = hostCall(http.MethodDelete, "/v1/gateway/hosts/jellyfin.mybox.box.example.org", "")
+	assert.Equal(t, http.StatusNoContent, w.Code)
+}
+
+func TestPutHostRejectsBadInput(t *testing.T) {
+	defer setup(t)(t)
+
+	for _, tc := range []struct{ body, mentions string }{
+		{`{"host":"mybox","target":"http://127.0.0.1:1"}`, "host"},
+		{`{"host":"a.b.c","target":"127.0.0.1:1"}`, "target"},
+		{`nope`, ""},
+	} {
+		w := hostCall(http.MethodPut, "/v1/gateway/hosts", tc.body)
+		assert.Equal(t, http.StatusBadRequest, w.Code, tc.body)
+		assert.Assert(t, strings.Contains(w.Body.String(), tc.mentions), w.Body.String())
+	}
+}
+
+func TestHostsNeedTheSecretToo(t *testing.T) {
+	defer setup(t)(t)
+
+	req, _ := http.NewRequest(http.MethodPut, "/v1/gateway/hosts", strings.NewReader(`{"host":"a.b.c","target":"http://127.0.0.1:1"}`))
+	req.RemoteAddr = "127.0.0.1:0"
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+
+	w := httptest.NewRecorder()
+	_router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
