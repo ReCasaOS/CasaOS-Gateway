@@ -186,6 +186,45 @@ func TestNoShareFilesMeansTheDefault(t *testing.T) {
 	}
 }
 
+func TestDefaultPairFollowsTheFiles(t *testing.T) {
+	dir := t.TempDir()
+	def := TLSConfig{CertFile: filepath.Join(dir, "admin.crt"), KeyFile: filepath.Join(dir, "admin.key")}
+	writeDefault := func(certPEM, keyPEM []byte) {
+		t.Helper()
+		if err := os.WriteFile(def.CertFile, certPEM, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if keyPEM != nil {
+			if err := os.WriteFile(def.KeyFile, keyPEM, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		touch(t, def.CertFile, def.KeyFile)
+	}
+
+	writeDefault(makePair(t, "old.local"))
+	p, err := NewCertPicker(def, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pick(t, p, "casaos.local"); len(got) != 1 || got[0] != "old.local" {
+		t.Fatalf("the first default pair must be served: %v", got)
+	}
+
+	// The administrator renews the certificate: served without a new picker.
+	writeDefault(makePair(t, "new.local"))
+	if got := pick(t, p, "casaos.local"); len(got) != 1 || got[0] != "new.local" {
+		t.Fatalf("the renewed default pair must be served: %v", got)
+	}
+
+	// A certificate whose key is not the key file: the previous default keeps serving.
+	brokenCert, _ := makePair(t, "broken.local")
+	writeDefault(brokenCert, nil)
+	if got := pick(t, p, "casaos.local"); len(got) != 1 || got[0] != "new.local" {
+		t.Fatalf("a broken default pair must keep the previous one: %v", got)
+	}
+}
+
 func TestDefaultPairMustLoad(t *testing.T) {
 	if _, err := NewCertPicker(TLSConfig{CertFile: "nope", KeyFile: "nope"}, t.TempDir()); err == nil {
 		t.Fatal("a default pair that does not load must fail the picker")

@@ -18,29 +18,65 @@ const ShareCertFile, ShareKeyFile = "share.crt", "share.key"
 // The share certificate is obtained by the core (ACME DNS-01 through the relay)
 // and dropped here; the gateway only serves it. It is re-read when the file's
 // mtime changes, so a renewal needs no restart.
+//
+// The default pair is followed the same way, so an administrator's renewal is
+// served without a restart.
 type CertPicker struct {
-	def      tls.Certificate
-	certPath string
-	keyPath  string
-
 	mu    sync.Mutex
-	share *tls.Certificate
-	leaf  *x509.Certificate
-	mod   time.Time
+	def   watchedPair
+	share watchedPair
 }
 
-// NewCertPicker loads def once and watches dir/share.{crt,key}.
-func NewCertPicker(def TLSConfig, dir string) (*CertPicker, error) {
-	cert, err := tls.LoadX509KeyPair(def.CertFile, def.KeyFile)
+// watchedPair is a certificate pair on disk, re-read when the certificate's
+// mtime changes.
+type watchedPair struct {
+	certPath, keyPath string
+	sticky            bool // keep the last pair when the files are gone
+
+	cert *tls.Certificate
+	leaf *x509.Certificate
+	mod  time.Time
+}
+
+// read follows the files by mtime. A pair that does not load (the two files
+// caught mid-write) keeps the previous one, and the previous mtime, so the next
+// call tries again. A missing certificate forgets the pair unless it is sticky.
+func (w *watchedPair) read() error {
+	info, err := os.Stat(w.certPath)
 	if err != nil {
+		if !w.sticky {
+			w.cert, w.leaf, w.mod = nil, nil, time.Time{}
+		}
+		return err
+	}
+	if info.ModTime().Equal(w.mod) {
+		return nil
+	}
+
+	cert, err := tls.LoadX509KeyPair(w.certPath, w.keyPath)
+	if err != nil {
+		return err
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return err
+	}
+
+	w.cert, w.leaf, w.mod = &cert, leaf, info.ModTime()
+	return nil
+}
+
+// NewCertPicker loads def, which must load, and watches it and dir/share.{crt,key}.
+func NewCertPicker(def TLSConfig, dir string) (*CertPicker, error) {
+	p := &CertPicker{
+		def:   watchedPair{certPath: def.CertFile, keyPath: def.KeyFile, sticky: true},
+		share: watchedPair{certPath: filepath.Join(dir, ShareCertFile), keyPath: filepath.Join(dir, ShareKeyFile)},
+	}
+	if err := p.def.read(); err != nil {
 		return nil, err
 	}
 
-	return &CertPicker{
-		def:      cert,
-		certPath: filepath.Join(dir, ShareCertFile),
-		keyPath:  filepath.Join(dir, ShareKeyFile),
-	}, nil
+	return p, nil
 }
 
 // GetCertificate is the share certificate when it exists and covers the server
@@ -50,39 +86,14 @@ func (p *CertPicker) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificat
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.refresh()
+	_ = p.share.read()
+	_ = p.def.read() // sticky: a failure keeps the pair loaded at start or since
 
-	if p.share != nil && hello.ServerName != "" && p.leaf.VerifyHostname(hello.ServerName) == nil {
-		return p.share, nil
+	if p.share.cert != nil && hello.ServerName != "" && p.share.leaf.VerifyHostname(hello.ServerName) == nil {
+		return p.share.cert, nil
 	}
 
-	return &p.def, nil
-}
-
-// refresh follows the files by mtime. A pair that does not load (the two files
-// caught mid-write) keeps the previous one, and the previous mtime, so the next
-// handshake tries again.
-func (p *CertPicker) refresh() {
-	info, err := os.Stat(p.certPath)
-	if err != nil {
-		p.share, p.leaf, p.mod = nil, nil, time.Time{}
-
-		return
-	}
-	if info.ModTime().Equal(p.mod) {
-		return
-	}
-
-	cert, err := tls.LoadX509KeyPair(p.certPath, p.keyPath)
-	if err != nil {
-		return
-	}
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return
-	}
-
-	p.share, p.leaf, p.mod = &cert, leaf, info.ModTime()
+	return p.def.cert, nil
 }
 
 // Config is the TLS configuration of a listener that picks by name.

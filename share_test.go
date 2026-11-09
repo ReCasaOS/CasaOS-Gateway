@@ -201,10 +201,12 @@ func TestPublicListenerIgnoresPROXY(t *testing.T) {
 	if err := raw.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if err := proxyproto.WriteV2(raw, visitor, relay); err != nil {
+	// One write: the server reads it all before answering 400 and closing, so no unread bytes turn the close into a reset.
+	var hdr strings.Builder
+	if err := proxyproto.WriteV2(&hdr, visitor, relay); err != nil {
 		t.Fatal(err)
 	}
-	resp := request(t, raw, "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+	resp := request(t, raw, hdr.String()+"GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
 	if !strings.HasPrefix(resp, "HTTP/1.1 400") {
 		t.Fatalf("response = %q, want 400: the public port must not parse PROXY", resp)
 	}
