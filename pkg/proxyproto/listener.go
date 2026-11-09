@@ -1,6 +1,7 @@
 package proxyproto
 
 import (
+	"errors"
 	"net"
 	"time"
 )
@@ -22,16 +23,30 @@ type listener struct {
 // Listen wraps inner: each accepted connection must start with a PROXY v2 header within headerTimeout,
 // read in its own goroutine so a slow one never blocks Accept; the returned connections report the
 // header's source as RemoteAddr. Connections with no/invalid header or nil addresses are closed silently.
+// A temporary accept error (file descriptors exhausted) is retried with a backoff of 5 ms up to 1 s;
+// any other error ends the listener and is what Accept returns from then on.
 func Listen(inner net.Listener, headerTimeout time.Duration) net.Listener {
 	l := &listener{Listener: inner, ready: make(chan net.Conn), closed: make(chan struct{})}
 	go func() {
+		delay := time.Duration(0)
 		for {
 			c, err := inner.Accept()
 			if err != nil {
+				var ne net.Error
+				if !errors.Is(err, net.ErrClosed) && errors.As(err, &ne) && ne.Temporary() {
+					if delay == 0 {
+						delay = 5 * time.Millisecond
+					} else if delay *= 2; delay > time.Second {
+						delay = time.Second
+					}
+					time.Sleep(delay)
+					continue
+				}
 				l.err = err
 				close(l.closed)
 				return
 			}
+			delay = 0
 			go l.handshake(c, headerTimeout)
 		}
 	}()

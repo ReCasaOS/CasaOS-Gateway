@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -193,5 +194,68 @@ func TestHeaderCompletingAfterCloseClosesTheConn(t *testing.T) {
 			t.Fatal("Accept = nil error after Close")
 		}
 		assertClosedAfterLateHeader(t, client)
+	}
+}
+
+type tempErr struct{}
+
+func (tempErr) Error() string   { return "too many open files" }
+func (tempErr) Timeout() bool   { return false }
+func (tempErr) Temporary() bool { return true }
+
+// flaky fails its first Accept with err, then delegates to the real listener.
+type flaky struct {
+	net.Listener
+	err  error
+	once sync.Once
+}
+
+func (f *flaky) Accept() (net.Conn, error) {
+	var err error
+	f.once.Do(func() { err = f.err })
+	if err != nil {
+		return nil, err
+	}
+	return f.Listener.Accept()
+}
+
+func TestTemporaryAcceptErrorIsRetried(t *testing.T) {
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln := Listen(&flaky{Listener: inner, err: tempErr{}}, time.Second)
+	t.Cleanup(func() { ln.Close() })
+
+	dialProxied(t, inner.Addr().String(), "203.0.113.9:4444", "x")
+	select {
+	case a := <-acceptAsync(ln):
+		if a.err != nil {
+			t.Fatalf("Accept = %v, want the connection after the temporary error", a.err)
+		}
+		a.c.Close()
+	case <-time.After(3 * time.Second):
+		t.Fatal("Accept never returned after a temporary error")
+	}
+}
+
+func TestPermanentAcceptErrorIsReturned(t *testing.T) {
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	ln := Listen(&flaky{Listener: inner, err: boom}, time.Second)
+	t.Cleanup(func() { ln.Close() })
+
+	for i := 0; i < 2; i++ { // and again for every later call
+		select {
+		case a := <-acceptAsync(ln):
+			if !errors.Is(a.err, boom) {
+				t.Fatalf("Accept = %v, want %v", a.err, boom)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("Accept never returned after a permanent error")
+		}
 	}
 }
