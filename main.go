@@ -42,6 +42,7 @@ var (
 	_httpsServer     *http.Server
 	_httpsPortServed string
 	_gatewayAddress string
+	_picker         *common.CertPicker // nil when it could not be built: see the gateway hook
 
 	_managementServiceReady = make(chan struct{})
 	_gatewayServiceReady    = make(chan struct{})
@@ -50,7 +51,8 @@ var (
 	_confSample string
 )
 
-func init() {
+// setup runs from main, not init, so the tests of this package can run without flags or /etc/casaos.
+func setup() {
 	versionFlag := flag.Bool("v", false, "version")
 	wwwPathFlag := flag.String("w", filepath.Join(constants.DefaultDataPath, "www"), "www path")
 	flag.Parse()
@@ -128,6 +130,8 @@ func init() {
 }
 
 func main() {
+	setup()
+
 	pidFilename, err := writePidFile(_state.GetRuntimePath())
 	if err != nil {
 		logger.Error("Failed to write pid file to runtime path", zap.Any("error", err), zap.Any("runtimePath", _state.GetRuntimePath()))
@@ -136,7 +140,7 @@ func main() {
 
 	defer cleanupFiles(
 		_state.GetRuntimePath(),
-		pidFilename, external.ManagementURLFilename, external.StaticURLFilename,
+		pidFilename, external.ManagementURLFilename, external.StaticURLFilename, common.ShareAddrFilename,
 	)
 
 	defer func() {
@@ -261,6 +265,20 @@ func run(
 
 				route := gatewayRoute.GetRoute()
 
+				// Not fatal: without a picker every TLS port serves its pair from files as before
+				// and the share listener stays closed.
+				tlsDir := filepath.Join(constants.DefaultDataPath, "tls")
+				def, err := _gatewayTLS, error(nil)
+				if !def.Enabled() {
+					def, err = common.SelfSigned(tlsDir)
+				}
+				if err == nil {
+					_picker, err = common.NewCertPicker(def, tlsDir)
+				}
+				if err != nil {
+					logger.Warn("No certificate picker: TLS ports serve their own pair, shared apps are not served", zap.Error(err))
+				}
+
 				if _state.GetGatewayPort() == "" {
 					// check if a port is available starting from port 80/8080
 					portsToCheck := []int{}
@@ -318,6 +336,21 @@ func run(
 				return nil
 			},
 		})
+
+	// share listener: the tunnel's visitor connections, piped in by the core. Before the static
+	// hook, whose OnStart never returns. Not fatal: the dashboard does not depend on it.
+	lifecycle.Append(fx.Hook{
+		OnStart: func(context.Context) error {
+			if _picker == nil {
+				logger.Warn("Shared apps are not served: no certificate picker")
+				return nil
+			}
+			if _, err := serveShare(_state.GetRuntimePath(), _picker.Config(), gatewayRoute.GetShareRoute()); err != nil {
+				logger.Warn("Shared apps are not served", zap.Error(err))
+			}
+			return nil
+		},
+	})
 
 	// static web
 	lifecycle.Append(fx.Hook{
@@ -386,7 +419,10 @@ func reloadGateway(port string, route *http.ServeMux) error {
 
 	go func() {
 		var err error
-		if _gatewayTLS.Enabled() {
+		if _gatewayTLS.Enabled() && _picker != nil {
+			gatewayNew.TLSConfig = _picker.Config()
+			err = gatewayNew.ServeTLS(listener, "", "")
+		} else if _gatewayTLS.Enabled() {
 			err = gatewayNew.ServeTLS(listener, _gatewayTLS.CertFile, _gatewayTLS.KeyFile)
 		} else {
 			err = gatewayNew.Serve(listener)
@@ -516,7 +552,11 @@ func reloadHTTPS(port string, route *http.ServeMux) error {
 	}
 
 	go func() {
-		if err := server.ServeTLS(listener, pair.CertFile, pair.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		certFile, keyFile := pair.CertFile, pair.KeyFile
+		if _picker != nil {
+			server.TLSConfig, certFile, keyFile = _picker.Config(), "", ""
+		}
+		if err := server.ServeTLS(listener, certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("Error when serving HTTPS", zap.Error(err), zap.String("address", server.Addr))
 		}
 	}()
