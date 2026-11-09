@@ -36,6 +36,8 @@ type watchedPair struct {
 	cert *tls.Certificate
 	leaf *x509.Certificate
 	mod  time.Time
+
+	failed time.Time // newest mtime of the pair that did not load: not parsed again until it changes
 }
 
 // read follows the files by mtime. A pair that does not load (the two files
@@ -52,18 +54,24 @@ func (w *watchedPair) read() error {
 	if info.ModTime().Equal(w.mod) {
 		return nil
 	}
+	stamp := info.ModTime() // a bad pair is retried when either file changes
+	if k, err := os.Stat(w.keyPath); err == nil && k.ModTime().After(stamp) {
+		stamp = k.ModTime()
+	}
+	if stamp.Equal(w.failed) {
+		return nil
+	}
 
 	cert, err := tls.LoadX509KeyPair(w.certPath, w.keyPath)
-	if err != nil {
-		return err
+	if err == nil {
+		var leaf *x509.Certificate
+		if leaf, err = x509.ParseCertificate(cert.Certificate[0]); err == nil {
+			w.cert, w.leaf, w.mod = &cert, leaf, info.ModTime()
+			return nil
+		}
 	}
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return err
-	}
-
-	w.cert, w.leaf, w.mod = &cert, leaf, info.ModTime()
-	return nil
+	w.failed = stamp
+	return err
 }
 
 // NewCertPicker loads def, which must load, and watches it and dir/share.{crt,key}.

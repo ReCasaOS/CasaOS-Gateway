@@ -159,6 +159,9 @@ func TestBrokenSharePairKeepsThePrevious(t *testing.T) {
 	if got := pick(t, p, name); len(got) != 1 || got[0] != "*.mybox.box.example.org" {
 		t.Fatalf("a broken pair must keep the previous one: %v", got)
 	}
+	if got := pick(t, p, name); len(got) != 1 || got[0] != "*.mybox.box.example.org" { // known-bad file is not re-parsed, still the previous
+		t.Fatalf("a second handshake must still get the previous pair: %v", got)
+	}
 
 	writePair(t, dir, "*.fixed.box.example.org")
 	if got := pick(t, p, "a.fixed.box.example.org"); len(got) != 1 || got[0] != "*.fixed.box.example.org" {

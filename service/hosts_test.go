@@ -55,12 +55,12 @@ func TestHostValidation(t *testing.T) {
 		assert.Assert(t, errors.Is(err, ErrBadHost), "host %q: %v", h, err)
 	}
 
-	for _, target := range []string{"", "127.0.0.1:8096", "ftp://127.0.0.1", "http://", "http://127.0.0.1:8096/path", "http://127.0.0.1:8096?x=1", "http://u:p@127.0.0.1"} {
+	for _, target := range []string{"", "127.0.0.1:8096", "ftp://127.0.0.1", "http://", "http://127.0.0.1:8096/path", "http://127.0.0.1:8096?x=1", "http://u:p@127.0.0.1", "http://192.168.1.10:8096", "http://169.254.169.254", "http://casaos.local:80"} {
 		err := m.SetHost(HostRoute{Host: "a.example.org", Target: target})
 		assert.Assert(t, errors.Is(err, ErrBadTarget), "target %q: %v", target, err)
 	}
 
-	for _, target := range []string{"http://127.0.0.1:8096", "https://127.0.0.1:8443", "http://127.0.0.1:8096/"} {
+	for _, target := range []string{"http://127.0.0.1:8096", "https://127.0.0.1:8443", "http://127.0.0.1:8096/", "http://localhost:8096", "https://[::1]:8443"} {
 		assert.NilError(t, m.SetHost(HostRoute{Host: "a.example.org", Target: target}))
 	}
 }
@@ -103,10 +103,11 @@ func TestGetHostsEmptyIsNonNilAndSorted(t *testing.T) {
 func TestHostProxySetsForwardedHeaders(t *testing.T) {
 	const host = "jellyfin.mybox.box.example.org"
 
-	var seenHost, xff, xfh, xfp string
+	var seenHost, xff, xfh, xfp, realIP string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenHost, xff = r.Host, r.Header.Get("X-Forwarded-For")
 		xfh, xfp = r.Header.Get("X-Forwarded-Host"), r.Header.Get("X-Forwarded-Proto")
+		realIP = r.Header.Get("X-Real-IP")
 	}))
 	defer backend.Close()
 
@@ -118,6 +119,7 @@ func TestHostProxySetsForwardedHeaders(t *testing.T) {
 		req.Host = host
 		req.RemoteAddr = "203.0.113.9:4444"
 		req.Header.Set("X-Forwarded-For", "1.1.1.1") // spoof
+		req.Header.Set("X-Real-IP", "127.0.0.1")     // spoof
 		if withTLS {
 			req.TLS = &tls.ConnectionState{}
 		}
@@ -129,6 +131,7 @@ func TestHostProxySetsForwardedHeaders(t *testing.T) {
 	assert.Equal(t, "203.0.113.9", xff)
 	assert.Equal(t, host, xfh)
 	assert.Equal(t, "http", xfp)
+	assert.Equal(t, "", realIP)
 
 	serve(true)
 	assert.Equal(t, "https", xfp)

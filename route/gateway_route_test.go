@@ -110,6 +110,27 @@ func TestSharedHostNeverReachesPathRoutes(t *testing.T) {
 	assert.Equal(t, len(env.app.list()), 1) // only the first request
 }
 
+func TestSharedHostDropsClientAddressHeaders(t *testing.T) {
+	var xff, realIP string
+	env := newShareEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		xff, realIP = r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Real-IP")
+	})
+
+	req, err := http.NewRequest(http.MethodGet, env.pub.URL+"/x", nil)
+	assert.NilError(t, err)
+	req.Host = "Jellyfin.MyBox.box.example.org:443" // mixed case and a port still match
+	req.Header.Set("X-Forwarded-For", "1.1.1.1")
+	req.Header.Set("X-Real-IP", "127.0.0.1")
+	resp, err := http.DefaultClient.Do(req)
+	assert.NilError(t, err)
+	resp.Body.Close()
+
+	assert.Equal(t, resp.StatusCode, http.StatusOK)
+	assert.DeepEqual(t, env.app.list(), []string{"/x"})
+	assert.Equal(t, xff, "127.0.0.1") // the test client's own address, not the claimed one
+	assert.Equal(t, realIP, "")
+}
+
 func TestLANHostKeepsPathRouting(t *testing.T) {
 	env := newShareEnv(t, nil)
 

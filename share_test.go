@@ -126,10 +126,10 @@ func TestShareListenerServesAVisitorThroughPROXYAndTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	type seen struct{ host, xff string }
+	type seen struct{ host, xff, realIP string }
 	got := make(chan seen, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got <- seen{r.Host, r.Header.Get("X-Forwarded-For")}
+		got <- seen{r.Host, r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Real-IP")}
 	}))
 	defer backend.Close()
 
@@ -155,12 +155,12 @@ func TestShareListenerServesAVisitorThroughPROXYAndTLS(t *testing.T) {
 	if names := tc.ConnectionState().PeerCertificates[0].DNSNames; len(names) != 1 || names[0] != "*.mybox.box.example.org" {
 		t.Fatalf("certificate names = %v, want the share certificate", names)
 	}
-	resp := request(t, tc, "GET /x HTTP/1.1\r\nHost: "+shareHost+"\r\nX-Forwarded-For: 1.1.1.1\r\nConnection: close\r\n\r\n")
+	resp := request(t, tc, "GET /x HTTP/1.1\r\nHost: "+shareHost+"\r\nX-Forwarded-For: 1.1.1.1\r\nX-Real-IP: 127.0.0.1\r\nConnection: close\r\n\r\n")
 	if !strings.HasPrefix(resp, "HTTP/1.1 200") {
 		t.Fatalf("response = %q, want 200", resp)
 	}
-	if s := <-got; s.host != shareHost || s.xff != "203.0.113.9" {
-		t.Fatalf("backend saw Host %q, X-Forwarded-For %q", s.host, s.xff)
+	if s := <-got; s.host != shareHost || s.xff != "203.0.113.9" || s.realIP != "" {
+		t.Fatalf("backend saw Host %q, X-Forwarded-For %q, X-Real-IP %q", s.host, s.xff, s.realIP)
 	}
 
 	// A host nobody shared: 404.

@@ -41,16 +41,20 @@ func parseHostTarget(target string) (*url.URL, error) {
 		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
 		return nil, ErrBadTarget
 	}
+	if h := u.Hostname(); h != "127.0.0.1" && h != "::1" && !strings.EqualFold(h, "localhost") {
+		return nil, ErrBadTarget // a shared app is on this box; nothing else may be reached from the internet
+	}
 	return u, nil
 }
 
 func newHostProxy(target *url.URL) *httputil.ReverseProxy {
 	p := &httputil.ReverseProxy{Rewrite: func(r *httputil.ProxyRequest) {
 		r.SetURL(target)
-		r.Out.Host = r.In.Host // the app sees its public name
-		r.SetXForwarded()      // For = client alone, Host, Proto — what the client sent is dropped
+		r.Out.Host = r.In.Host        // the app sees its public name
+		r.SetXForwarded()             // For = client alone, Host, Proto — what the client sent is dropped
+		r.Out.Header.Del("X-Real-IP") // a visitor's claim, like the path routes' rewriteRequestSourceIP drops
 	}}
-	if target.Scheme == "https" { // shortcut: the app is on this box, its certificate is its own business; revisit if a target ever leaves loopback
+	if target.Scheme == "https" { // shortcut: targets are enforced loopback (parseHostTarget), so the app's own certificate is not verified; verify if that ever relaxes
 		tr := http.DefaultTransport.(*http.Transport).Clone()
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 		p.Transport = tr

@@ -29,7 +29,11 @@ func serveShare(runtimePath string, tlsCfg *tls.Config, h http.Handler) (*http.S
 		return nil, err
 	}
 
-	server := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       2 * time.Minute, // the only listener facing strangers: an idle keep-alive would pin a tunnel stream
+	}
 
 	go func() {
 		err := server.Serve(tls.NewListener(proxyproto.Listen(ln, 5*time.Second), tlsCfg))
