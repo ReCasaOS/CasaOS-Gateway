@@ -94,7 +94,13 @@ func init() {
 		KeyFile:  config.GetString(common.ConfigKeyGatewayTLSKey),
 	}
 
-	_gatewayAddress = config.GetString(common.ConfigKeyGatewayAddress)
+	// A bad value stops the start with the key and the value in the log, rather
+	// than binding something nobody meant.
+	if _gatewayAddress, err = common.ParseGatewayAddress(config.GetString(common.ConfigKeyGatewayAddress)); err != nil {
+		logger.Error("Invalid gateway address", zap.Error(err))
+		panic(err)
+	}
+
 	_httpsPort = config.GetString(common.ConfigKeyGatewayHTTPSPort)
 
 	if err := _state.SetWWWPath(*wwwPathFlag); err != nil {
@@ -233,6 +239,11 @@ func run(
 	lifecycle.Append(
 		fx.Hook{
 			OnStart: func(ctx context.Context) error {
+				// systemd starts us after network.target, which is not "the address is up".
+				if err := common.WaitForGatewayAddress(ctx, _gatewayAddress, 30*time.Second); err != nil {
+					return err
+				}
+
 				route := gatewayRoute.GetRoute()
 
 				if _state.GetGatewayPort() == "" {
