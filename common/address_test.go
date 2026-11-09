@@ -79,3 +79,17 @@ func TestConfiguredAddressBindsThatAddress(t *testing.T) {
 		t.Fatalf("bound %s, want 127.0.0.1", got)
 	}
 }
+
+func TestParseHTTPSPort(t *testing.T) {
+	for _, ok := range []string{"", "0", "1", "443", "8443", "65535"} {
+		if got, err := ParseHTTPSPort(ok); err != nil || got != ok {
+			t.Errorf("ParseHTTPSPort(%q) = %q, %v", ok, got, err)
+		}
+	}
+
+	for _, bad := range []string{"-1", "65536", "abc", "04", "443 ", "0x1bb", "4.43", "off"} {
+		if _, err := ParseHTTPSPort(bad); err == nil {
+			t.Errorf("ParseHTTPSPort(%q) accepted", bad)
+		}
+	}
+}

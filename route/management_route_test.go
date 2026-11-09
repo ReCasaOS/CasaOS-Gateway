@@ -160,6 +160,49 @@ func TestChangePort(t *testing.T) {
 	assert.Equal(t, expectedPort, result.Data)
 }
 
+func TestChangeHTTPSPort(t *testing.T) {
+	defer setup(t)(t)
+
+	var applied string
+
+	_state.OnHTTPSPortChange(func(port string) error {
+		applied = port
+		return nil
+	})
+
+	put := func(port string) *httptest.ResponseRecorder {
+		body, err := json.Marshal(&model.ChangePortRequest{Port: port})
+		assert.NilError(t, err)
+
+		req, _ := http.NewRequest(http.MethodPut, "/v1/gateway/httpsport", bytes.NewReader(body))
+		asService(req)
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+
+		w := httptest.NewRecorder()
+		_router.ServeHTTP(w, req)
+
+		return w
+	}
+
+	assert.Equal(t, http.StatusOK, put("0").Code)
+	assert.Equal(t, "0", applied)
+
+	req, _ := http.NewRequest(http.MethodGet, "/v1/gateway/httpsport", nil)
+	asService(req)
+
+	w := httptest.NewRecorder()
+	_router.ServeHTTP(w, req)
+
+	var result *model.Result
+	assert.NilError(t, json.NewDecoder(w.Body).Decode(&result))
+	assert.Equal(t, "0", result.Data)
+
+	// a handler that refuses leaves the setting as it was
+	_state.OnHTTPSPortChange(func(string) error { return errors.New("port is held") })
+	assert.Equal(t, http.StatusBadRequest, put("8443").Code)
+	assert.Equal(t, "0", _state.GetHTTPSPort())
+}
+
 func TestChangePortNegative(t *testing.T) {
 	defer setup(t)(t)
 
@@ -252,6 +295,7 @@ func TestLoopbackAloneIsNotAService(t *testing.T) {
 		path   string
 	}{
 		{"changing the port", http.MethodPut, "/v1/gateway/port"},
+		{"changing the HTTPS port", http.MethodPut, "/v1/gateway/httpsport"},
 		{"registering a route", http.MethodPost, "/v1/gateway/routes"},
 		{"listing the routes", http.MethodGet, "/v1/gateway/routes"},
 	} {
