@@ -147,3 +147,51 @@ func TestCloseUnblocksAccept(t *testing.T) {
 		t.Fatal("Accept still blocked after Close")
 	}
 }
+
+// fakeInner hands out one connection, then fails like a dropped tunnel would.
+type fakeInner struct {
+	net.Listener
+	first chan net.Conn
+}
+
+func (f *fakeInner) Accept() (net.Conn, error) {
+	if c, ok := <-f.first; ok {
+		return c, nil
+	}
+	return nil, errors.New("inner failed")
+}
+
+func assertClosedAfterLateHeader(t *testing.T, client net.Conn) {
+	t.Helper()
+	go WriteV2(client, tcp(t, "203.0.113.12:3"), tcp(t, "10.0.0.1:443"))
+	client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := client.Read(make([]byte, 1)); err == nil || isTimeout(err) {
+		t.Fatalf("read = %v, want the late connection closed", err)
+	}
+}
+
+func TestHeaderCompletingAfterInnerFailedClosesTheConn(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	f := &fakeInner{first: make(chan net.Conn, 1)}
+	f.first <- server
+	close(f.first)
+	ln := Listen(f, time.Minute)
+	if _, err := ln.Accept(); err == nil {
+		t.Fatal("Accept = nil error, want the inner failure")
+	}
+	assertClosedAfterLateHeader(t, client)
+}
+
+func TestHeaderCompletingAfterCloseClosesTheConn(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		ln, addr := newListener(t, time.Minute)
+		client := dialWith(t, addr, "")
+		time.Sleep(10 * time.Millisecond) // let the listener accept it; correctness does not depend on it
+		ln.Close()
+		if _, err := ln.Accept(); err == nil {
+			t.Fatal("Accept = nil error after Close")
+		}
+		assertClosedAfterLateHeader(t, client)
+	}
+}
