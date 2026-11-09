@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +38,7 @@ var (
 	_state          *service.State
 	_gateway        *http.Server
 	_gatewayTLS     common.TLSConfig
+	_httpsMu         sync.Mutex // reloadHTTPS runs from the management API: two calls must not overlap
 	_httpsServer     *http.Server
 	_httpsPortServed string
 	_gatewayAddress string
@@ -467,6 +469,9 @@ func checkPrequisites(state *service.State) error {
 // leaves things as they were. Not used when the administrator supplied a
 // certificate: the plain port already serves HTTPS then.
 func reloadHTTPS(port string, route *http.ServeMux) error {
+	_httpsMu.Lock()
+	defer _httpsMu.Unlock()
+
 	if _gatewayTLS.Enabled() {
 		return errors.New("the public port serves HTTPS with the certificate of gateway.ini: httpsport is not used")
 	}
