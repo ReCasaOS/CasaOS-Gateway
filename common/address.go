@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"time"
 )
 
@@ -59,4 +60,19 @@ func WaitForGatewayAddress(ctx context.Context, address string, timeout time.Dur
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// ParseHTTPSPort checks the `httpsport` key and the API that changes it: empty
+// (the default, 443), "0" (no HTTPS listener of the gateway's own) or a port.
+func ParseHTTPSPort(port string) (string, error) {
+	if port == "" {
+		return "", nil
+	}
+
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 0 || n > 65535 || strconv.Itoa(n) != port {
+		return "", fmt.Errorf("the HTTPS port %q is not 0 (off) or a port from 1 to 65535", port)
+	}
+
+	return port, nil
 }

@@ -4,6 +4,9 @@ type State struct {
 	gatewayPort         string
 	onGatewayPortChange []func(string) error
 
+	httpsPort         string
+	onHTTPSPortChange []func(string) error
+
 	runtimePath string
 	wwwPath     string
 }
@@ -29,6 +32,27 @@ func (c *State) SetGatewayPort(port string) (err error) {
 
 func (c *State) GetGatewayPort() string {
 	return c.gatewayPort
+}
+
+func (c *State) SetHTTPSPort(port string) (err error) {
+	for i := len(c.onHTTPSPortChange) - 1; i >= 0; i-- {
+		if err := c.onHTTPSPortChange[i](port); err != nil {
+			return err
+		}
+	}
+
+	c.httpsPort = port
+
+	return nil
+}
+
+func (c *State) GetHTTPSPort() string {
+	return c.httpsPort
+}
+
+// Same as OnGatewayPortChange, for the HTTPS port: the first func registered is the last to run.
+func (c *State) OnHTTPSPortChange(f func(string) error) {
+	c.onHTTPSPortChange = append(c.onHTTPSPortChange, f)
 }
 
 // Add func `f` to the stack. The stack of funcs will be called, in reverse order, when there is request to change the port.

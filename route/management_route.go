@@ -121,6 +121,39 @@ func (m *ManagementRoute) buildV1RouteGroup(v1Group *echo.Group) {
 			})
 		})
 
+		// The port of the HTTPS listener the gateway makes for itself: a number, or
+		// "0" for none, which frees 443 for a proxy of one's own.
+		v1GatewayGroup.GET("/httpsport", func(ctx echo.Context) error {
+			return ctx.JSON(http.StatusOK, model.Result{
+				Success: common_err.SUCCESS,
+				Message: common_err.GetMsg(common_err.SUCCESS),
+				Data:    m.management.GetHTTPSPort(),
+			})
+		})
+
+		v1GatewayGroup.PUT("/httpsport", func(ctx echo.Context) error {
+			var request *model.ChangePortRequest
+
+			if err := ctx.Bind(&request); err != nil || request == nil {
+				return ctx.JSON(http.StatusBadRequest, model.Result{
+					Success: common_err.CLIENT_ERROR,
+					Message: "a port is required",
+				})
+			}
+
+			if err := m.management.SetHTTPSPort(request.Port); err != nil {
+				return ctx.JSON(http.StatusBadRequest, model.Result{
+					Success: common_err.CLIENT_ERROR,
+					Message: err.Error(),
+				})
+			}
+
+			return ctx.JSON(http.StatusOK, model.Result{
+				Success: common_err.SUCCESS,
+				Message: common_err.GetMsg(common_err.SUCCESS),
+			})
+		})
+
 		v1GatewayGroup.PUT("/port",
 			func(ctx echo.Context) error {
 				var request *model.ChangePortRequest

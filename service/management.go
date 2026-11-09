@@ -108,6 +108,14 @@ func (g *Management) SetGatewayPort(port string) error {
 	return nil
 }
 
+func (g *Management) GetHTTPSPort() string {
+	return g.State.GetHTTPSPort()
+}
+
+func (g *Management) SetHTTPSPort(port string) error {
+	return g.State.SetHTTPSPort(port)
+}
+
 func getSortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 

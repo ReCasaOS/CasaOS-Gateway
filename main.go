@@ -37,7 +37,8 @@ var (
 	_state          *service.State
 	_gateway        *http.Server
 	_gatewayTLS     common.TLSConfig
-	_httpsPort      string
+	_httpsServer     *http.Server
+	_httpsPortServed string
 	_gatewayAddress string
 
 	_managementServiceReady = make(chan struct{})
@@ -101,7 +102,7 @@ func init() {
 		panic(err)
 	}
 
-	_httpsPort = config.GetString(common.ConfigKeyGatewayHTTPSPort)
+	_ = _state.SetHTTPSPort(config.GetString(common.ConfigKeyGatewayHTTPSPort)) // nothing is registered yet: this only stores it
 
 	if err := _state.SetWWWPath(*wwwPathFlag); err != nil {
 		logger.Error("Failed to set www path", zap.Any("error", err), zap.String("wwwpath", *wwwPathFlag))
@@ -115,6 +116,11 @@ func init() {
 
 	_state.OnGatewayPortChange(func(port string) error {
 		config.Set(common.ConfigKeyGatewayPort, port)
+		return config.WriteConfig()
+	})
+
+	_state.OnHTTPSPortChange(func(port string) error {
+		config.Set(common.ConfigKeyGatewayHTTPSPort, port)
 		return config.WriteConfig()
 	})
 }
@@ -228,6 +234,13 @@ func run(
 					return err
 				}
 
+				if err := management.CreateRoute(&model.Route{
+					Path:   "/v1/gateway/httpsport",
+					Target: "http://" + listener.Addr().String(),
+				}); err != nil {
+					return err
+				}
+
 				_managementServiceReady <- struct{}{}
 
 				return nil
@@ -287,7 +300,16 @@ func run(
 					return err
 				}
 
-				serveSelfSignedHTTPS(route)
+				// Not fatal: a port somebody else holds is logged and the plain port carries on.
+				if !_gatewayTLS.Enabled() {
+					if err := reloadHTTPS(_state.GetHTTPSPort(), route); err != nil {
+						logger.Warn("HTTPS is not served", zap.Error(err))
+					}
+				}
+
+				_state.OnHTTPSPortChange(func(port string) error {
+					return reloadHTTPS(port, route)
+				})
 
 				_gatewayServiceReady <- struct{}{}
 
@@ -438,35 +460,48 @@ func checkPrequisites(state *service.State) error {
 	return nil
 }
 
-// serveSelfSignedHTTPS serves the same routes over HTTPS on the HTTPS port,
-// with a certificate the gateway makes for itself, beside the plain port --
-// unless the administrator supplied a certificate, in which case the plain port
-// already serves HTTPS, or turned the port off. Nothing here is fatal: a port
-// somebody else holds is logged and the plain port carries on.
-func serveSelfSignedHTTPS(route *http.ServeMux) {
+// reloadHTTPS serves the same routes over HTTPS on port, with a certificate the
+// gateway makes for itself, beside the plain port -- or on no port at all when
+// it is "0", which frees 443 for a proxy of the administrator's own. The new
+// listener is open before the old one is closed, so a port somebody else holds
+// leaves things as they were. Not used when the administrator supplied a
+// certificate: the plain port already serves HTTPS then.
+func reloadHTTPS(port string, route *http.ServeMux) error {
 	if _gatewayTLS.Enabled() {
-		return
+		return errors.New("the public port serves HTTPS with the certificate of gateway.ini: httpsport is not used")
 	}
 
-	port := _httpsPort
+	port, err := common.ParseHTTPSPort(port)
+	if err != nil {
+		return err
+	}
+
 	if port == "" {
 		port = common.DefaultHTTPSPort
 	}
+
+	if port == _state.GetGatewayPort() {
+		return errors.New("the HTTPS port is the port of the plain gateway")
+	}
+
 	if port == "0" {
+		stopHTTPS()
 		logger.Info("HTTPS with a self-signed certificate is turned off (httpsport=0)")
-		return
+		return nil
+	}
+
+	if _httpsServer != nil && _httpsPortServed == port {
+		return nil
 	}
 
 	pair, err := common.SelfSigned(filepath.Join(constants.DefaultDataPath, "tls"))
 	if err != nil {
-		logger.Error("could not make the gateway's own certificate; HTTPS is not served", zap.Error(err))
-		return
+		return fmt.Errorf("could not make the gateway's own certificate: %w", err)
 	}
 
 	listener, err := net.Listen("tcp", net.JoinHostPort(_gatewayAddress, port))
 	if err != nil {
-		logger.Warn("the HTTPS port is not available; HTTPS is not served", zap.String("port", port), zap.Error(err))
-		return
+		return fmt.Errorf("the HTTPS port %s is not available: %w", port, err)
 	}
 
 	server := &http.Server{
@@ -483,4 +518,30 @@ func serveSelfSignedHTTPS(route *http.ServeMux) {
 
 	logger.Info("HTTPS is listening with the gateway's own certificate...",
 		zap.String("address", server.Addr), zap.String("certificate", pair.CertFile))
+
+	old := _httpsServer
+	_httpsServer, _httpsPortServed = server, port
+
+	if old != nil {
+		go func() {
+			time.Sleep(time.Second) // so that a request on the old port gets its answer
+			_ = old.Shutdown(context.Background())
+		}()
+	}
+
+	return nil
+}
+
+func stopHTTPS() {
+	if _httpsServer == nil {
+		return
+	}
+
+	old := _httpsServer
+	_httpsServer, _httpsPortServed = nil, ""
+
+	go func() {
+		time.Sleep(time.Second)
+		_ = old.Shutdown(context.Background())
+	}()
 }
