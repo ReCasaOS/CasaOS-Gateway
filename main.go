@@ -417,10 +417,13 @@ func reloadGateway(port string, route *http.ServeMux) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	if _gatewayTLS.Enabled() && _picker != nil {
+		gatewayNew.TLSConfig = _picker.Config()
+	}
+
 	go func() {
 		var err error
 		if _gatewayTLS.Enabled() && _picker != nil {
-			gatewayNew.TLSConfig = _picker.Config()
 			err = gatewayNew.ServeTLS(listener, "", "")
 		} else if _gatewayTLS.Enabled() {
 			err = gatewayNew.ServeTLS(listener, _gatewayTLS.CertFile, _gatewayTLS.KeyFile)
@@ -551,11 +554,12 @@ func reloadHTTPS(port string, route *http.ServeMux) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	certFile, keyFile := pair.CertFile, pair.KeyFile
+	if _picker != nil {
+		server.TLSConfig, certFile, keyFile = _picker.Config(), "", ""
+	}
+
 	go func() {
-		certFile, keyFile := pair.CertFile, pair.KeyFile
-		if _picker != nil {
-			server.TLSConfig, certFile, keyFile = _picker.Config(), "", ""
-		}
 		if err := server.ServeTLS(listener, certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("Error when serving HTTPS", zap.Error(err), zap.String("address", server.Addr))
 		}
