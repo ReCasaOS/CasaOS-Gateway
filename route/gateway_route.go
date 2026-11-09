@@ -63,9 +63,33 @@ func rewriteRequestSourceIP(r *http.Request) {
 	// So we didn't need to add it.
 }
 
+// serveHost proxies r when its Host is in the host table and reports whether it did.
+// The host proxy sets X-Forwarded-* itself, so rewriteRequestSourceIP is not used here.
+func (g *GatewayRoute) serveHost(w http.ResponseWriter, r *http.Request) bool {
+	proxy := g.management.GetHostProxy(r.Host)
+	if proxy == nil {
+		return false
+	}
+	proxy.ServeHTTP(w, r)
+	return true
+}
+
+// GetShareRoute serves host routes only; anything else is 404. No /ping, no path routes.
+func (g *GatewayRoute) GetShareRoute() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !g.serveHost(w, r) {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+}
+
 func (g *GatewayRoute) GetRoute() *http.ServeMux {
 	gatewayMux := http.NewServeMux()
 	gatewayMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if g.serveHost(w, r) {
+			return
+		}
+
 		if r.URL.Path == "/ping" {
 			w.WriteHeader(http.StatusOK)
 			if _, err := w.Write([]byte("pong from gateway service")); err != nil {
