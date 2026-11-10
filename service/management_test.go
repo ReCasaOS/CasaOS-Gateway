@@ -1,9 +1,11 @@
 package service
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/ReCasaOS/CasaOS-Common/model"
@@ -98,4 +100,33 @@ func TestPathSorting(t *testing.T) {
 		proxy.Director(req)
 		assert.Equal(t, target, req.URL.String())
 	}
+}
+
+// Services register their routes while the gateway already serves requests: at
+// start, every one of them does, and the dashboard is already asking.
+func TestRoutesAreCreatedWhileRequestsAreServed(t *testing.T) {
+	state := NewState()
+	if err := state.SetRuntimePath(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	management := NewManagementService(state)
+
+	var services sync.WaitGroup
+	for service := 0; service < 8; service++ {
+		services.Add(1)
+		go func() {
+			defer services.Done()
+			for route := 0; route < 50; route++ {
+				if err := management.CreateRoute(&model.Route{Path: fmt.Sprintf("/v%d/%d", service, route), Target: "http://localhost:8080"}); err != nil {
+					t.Error(err)
+				}
+				management.GetProxy("/v1/users")
+				management.GetRoutes()
+			}
+		}()
+	}
+	services.Wait()
+
+	assert.Equal(t, 400, len(management.GetRoutes()))
+	assert.Equal(t, 400, len(NewManagementService(state).GetRoutes()), "and every one of them was saved")
 }

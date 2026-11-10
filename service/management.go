@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/ReCasaOS/CasaOS-Common/model"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -17,6 +18,8 @@ import (
 const RoutesFile = "routes.json"
 
 type Management struct {
+	// path routes are written by every service as it starts, while requests are served
+	pathMu              sync.RWMutex
 	pathTargetMap       map[string]string
 	pathReverseProxyMap map[string]*httputil.ReverseProxy
 
@@ -57,6 +60,8 @@ func (g *Management) CreateRoute(route *model.Route) error {
 		return err
 	}
 
+	g.pathMu.Lock()
+	defer g.pathMu.Unlock()
 	g.pathTargetMap[route.Path] = route.Target
 	g.pathReverseProxyMap[route.Path] = httputil.NewSingleHostReverseProxy(url)
 
@@ -71,6 +76,9 @@ func (g *Management) CreateRoute(route *model.Route) error {
 }
 
 func (g *Management) GetRoutes() []*model.Route {
+	g.pathMu.RLock()
+	defer g.pathMu.RUnlock()
+
 	routes := make([]*model.Route, 0)
 
 	for path, target := range g.pathTargetMap {
@@ -84,6 +92,9 @@ func (g *Management) GetRoutes() []*model.Route {
 }
 
 func (g *Management) GetProxy(path string) *httputil.ReverseProxy {
+	g.pathMu.RLock()
+	defer g.pathMu.RUnlock()
+
 	// sort paths by length in descending order
 	// (without this step, a path like "/abcd" can potentially be matched with "/ab")
 	paths := getSortedKeys(g.pathReverseProxyMap)
