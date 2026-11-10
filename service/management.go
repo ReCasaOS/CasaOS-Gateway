@@ -2,12 +2,15 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/ReCasaOS/CasaOS-Common/model"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -19,6 +22,11 @@ const RoutesFile = "routes.json"
 type Management struct {
 	pathTargetMap       map[string]string
 	pathReverseProxyMap map[string]*httputil.ReverseProxy
+
+	// host routes are written by the core process while requests are served
+	hostMu        sync.RWMutex
+	hostTargetMap map[string]string
+	hostProxyMap  map[string]*httputil.ReverseProxy
 
 	State *State
 }
@@ -44,9 +52,32 @@ func NewManagementService(state *State) *Management {
 		pathReverseProxyMap[path] = httputil.NewSingleHostReverseProxy(targetURL)
 	}
 
+	hostsFilepath := filepath.Join(state.GetRuntimePath(), HostsFile)
+
+	// a missing hosts.json is normal: nothing is shared yet
+	hostTargetMap, err := loadPathTargetMapFrom(hostsFilepath)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			logger.Error("Failed to load hosts", zap.Any("error", err), zap.Any("filepath", hostsFilepath))
+		}
+		hostTargetMap = make(map[string]string)
+	}
+
+	hostProxyMap := make(map[string]*httputil.ReverseProxy)
+	for host, target := range hostTargetMap {
+		targetURL, err := parseHostTarget(target)
+		if err != nil {
+			logger.Error("Failed to parse host target", zap.Any("error", err), zap.String("host", host))
+			continue
+		}
+		hostProxyMap[host] = newHostProxy(targetURL)
+	}
+
 	return &Management{
 		pathTargetMap:       pathTargetMap,
 		pathReverseProxyMap: pathReverseProxyMap,
+		hostTargetMap:       hostTargetMap,
+		hostProxyMap:        hostProxyMap,
 		State:               state,
 	}
 }

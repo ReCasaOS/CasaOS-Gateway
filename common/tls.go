@@ -5,9 +5,10 @@ import "crypto/tls"
 // TLSConfig is the optional certificate the gateway serves with. Both fields
 // empty means plain HTTP, which is the default and what CasaOS has always done.
 //
-// Certificates are supplied by the administrator, not generated or renewed
-// here: ACME belongs in a reverse proxy that can bind port 80 or hold registrar
-// credentials, which a LAN appliance generally cannot.
+// Where certificates come from: the administrator may supply a pair (this
+// type); otherwise the gateway makes a self-signed one (SelfSigned). The gateway
+// never runs ACME itself: the share certificate is obtained by the core (ACME
+// DNS-01 through the relay) and only served here, by CertPicker.
 type TLSConfig struct {
 	CertFile string
 	KeyFile  string

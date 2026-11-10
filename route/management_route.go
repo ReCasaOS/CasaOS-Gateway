@@ -2,6 +2,7 @@ package route
 
 import (
 	"crypto/ecdsa"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -112,6 +113,49 @@ func (m *ManagementRoute) buildV1RouteGroup(v1Group *echo.Group) {
 
 				return ctx.NoContent(http.StatusCreated)
 			})
+
+		// Hosts of shared apps: one name on the box's domain to one local target.
+		v1GatewayGroup.GET("/hosts", func(ctx echo.Context) error {
+			return ctx.JSON(http.StatusOK, m.management.GetHosts())
+		})
+
+		v1GatewayGroup.PUT("/hosts", func(ctx echo.Context) error {
+			var host service.HostRoute
+
+			if err := ctx.Bind(&host); err != nil {
+				return ctx.JSON(http.StatusBadRequest, model.Result{
+					Success: common_err.CLIENT_ERROR,
+					Message: "a host and a target are required",
+				})
+			}
+
+			if err := m.management.SetHost(host); err != nil {
+				if errors.Is(err, service.ErrBadHost) || errors.Is(err, service.ErrBadTarget) {
+					return ctx.JSON(http.StatusBadRequest, model.Result{
+						Success: common_err.CLIENT_ERROR,
+						Message: err.Error(),
+					})
+				}
+
+				return ctx.JSON(http.StatusInternalServerError, model.Result{
+					Success: common_err.SERVICE_ERROR,
+					Message: err.Error(),
+				})
+			}
+
+			return ctx.NoContent(http.StatusCreated)
+		})
+
+		v1GatewayGroup.DELETE("/hosts/:host", func(ctx echo.Context) error {
+			if err := m.management.DeleteHost(ctx.Param("host")); err != nil {
+				return ctx.JSON(http.StatusInternalServerError, model.Result{
+					Success: common_err.SERVICE_ERROR,
+					Message: err.Error(),
+				})
+			}
+
+			return ctx.NoContent(http.StatusNoContent)
+		})
 
 		v1GatewayGroup.GET("/port", func(ctx echo.Context) error {
 			return ctx.JSON(http.StatusOK, model.Result{

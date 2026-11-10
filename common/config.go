@@ -28,6 +28,9 @@ const (
 	ConfigKeyGatewayHTTPSPort = "gateway.HTTPSPort"
 	ConfigKeyRuntimePath    = "common.RuntimePath"
 
+	// Written to the runtime path: the address the core pipes the tunnel's visitor connections into.
+	ShareAddrFilename = "share.addr"
+
 	GatewayName       = "gateway"
 	GatewayConfigType = "ini"
 )
