@@ -130,6 +130,33 @@ func TestSetConfigPersists(t *testing.T) {
 	}
 }
 
+func TestCorruptFileStartsBroken(t *testing.T) {
+	rt := t.TempDir()
+	g, err := New(rt, t.TempDir(), time.Now)
+	if err != nil || g.Broken() {
+		t.Fatalf("a missing file is the normal unconfigured state: err=%v broken=%v", err, g.Broken())
+	}
+
+	for _, content := range []string{"{not json", `{"apps":{"a.b.c":{"access":"x"}}}`} {
+		if err := os.WriteFile(filepath.Join(rt, FileName), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		g, err := New(rt, t.TempDir(), time.Now)
+		if err != nil {
+			t.Fatalf("New must not fail on a corrupt file: %v", err)
+		}
+		if !g.Broken() || g.Configured() {
+			t.Fatalf("%q: broken=%v configured=%v", content, g.Broken(), g.Configured())
+		}
+		if err := g.SetConfig(example(t)); err != nil {
+			t.Fatal(err)
+		}
+		if g.Broken() || !g.Configured() {
+			t.Fatal("a valid SetConfig must clear broken")
+		}
+	}
+}
+
 func TestStatusNeverNull(t *testing.T) {
 	g, err := New(t.TempDir(), t.TempDir(), time.Now)
 	if err != nil {

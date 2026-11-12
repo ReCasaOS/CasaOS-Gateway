@@ -13,6 +13,9 @@ import (
 	"regexp"
 	"sync"
 	"time"
+
+	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"go.uber.org/zap"
 )
 
 // FileName is the pushed config, in the runtime path next to hosts.json.
@@ -182,28 +185,46 @@ type Guard struct {
 	mu         sync.RWMutex
 	cfg        Config
 	configured bool
+	broken     bool // guard.json exists but cannot be used: shared hosts must answer 503 until a SetConfig succeeds
 }
 
-// New loads guard.json from runtimePath when it exists.
+// New loads guard.json from runtimePath when it exists. A file that cannot be used does not stop
+// the Gateway (it serves the dashboard too): the guard starts Broken and the error is logged.
 func New(runtimePath, dataPath string, now func() time.Time) (*Guard, error) {
 	g := &Guard{runtimePath: runtimePath, dataPath: dataPath, now: now}
 
-	raw, err := os.ReadFile(filepath.Join(runtimePath, FileName))
-	if errors.Is(err, fs.ErrNotExist) {
-		return g, nil
+	c, err := load(filepath.Join(runtimePath, FileName))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		logger.Error("guard.json is unusable: shared apps answer 503 until the core pushes a config", zap.Error(err))
+		g.broken = true
+	default:
+		g.cfg, g.configured = c, true
 	}
-	if err != nil {
-		return nil, err
-	}
+	return g, nil
+}
+
+func load(path string) (Config, error) {
 	var c Config
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return c, err
+	}
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return nil, fmt.Errorf("%s: %w", FileName, err)
+		return Config{}, fmt.Errorf("%s: %w", FileName, err)
 	}
 	if err := c.Validate(); err != nil {
-		return nil, fmt.Errorf("%s: %w", FileName, err)
+		return Config{}, fmt.Errorf("%s: %w", FileName, err)
 	}
-	g.cfg, g.configured = c, true
-	return g, nil
+	return c, nil
+}
+
+// Broken reports a guard.json that could not be loaded; cleared by the next successful SetConfig.
+func (g *Guard) Broken() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.broken
 }
 
 // SetConfig validates c, writes guard.json by rename, then swaps it in. On any error the previous config stays.
@@ -221,7 +242,7 @@ func (g *Guard) SetConfig(c Config) error {
 	if err := writeFileAtomic(filepath.Join(g.runtimePath, FileName), raw); err != nil {
 		return err
 	}
-	g.cfg, g.configured = c, true
+	g.cfg, g.configured, g.broken = c, true, false
 	return nil
 }
 

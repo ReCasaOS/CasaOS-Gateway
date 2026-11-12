@@ -160,10 +160,18 @@ func (m *ManagementRoute) buildV1RouteGroup(v1Group *echo.Group) {
 
 		// Protection of the shared apps: the core pushes the whole config, atomically.
 		v1GatewayGroup.GET("/guard", func(ctx echo.Context) error {
+			if m.management.Guard == nil {
+				return ctx.NoContent(http.StatusNotFound)
+			}
+
 			return ctx.JSON(http.StatusOK, m.management.Guard.Status())
 		})
 
 		v1GatewayGroup.PUT("/guard", func(ctx echo.Context) error {
+			if m.management.Guard == nil {
+				return ctx.NoContent(http.StatusNotFound)
+			}
+
 			var c guard.Config
 
 			if err := ctx.Bind(&c); err != nil {

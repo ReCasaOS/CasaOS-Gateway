@@ -381,6 +381,15 @@ func TestHostsNeedTheSecretToo(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
+func TestGuardRoutesAreAbsentWithoutAGuard(t *testing.T) {
+	defer setup(t)(t)
+
+	_router = NewManagementRoute(service.NewManagementService(_state)).GetRoute() // no Guard set
+
+	assert.Equal(t, http.StatusNotFound, hostCall(http.MethodGet, "/v1/gateway/guard", "").Code)
+	assert.Equal(t, http.StatusNotFound, hostCall(http.MethodPut, "/v1/gateway/guard", "{}").Code)
+}
+
 func TestGuardRoutes(t *testing.T) {
 	defer setup(t)(t)
 
