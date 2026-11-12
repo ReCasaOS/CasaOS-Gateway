@@ -66,11 +66,13 @@ func rewriteRequestSourceIP(r *http.Request) {
 
 // serveHost proxies r when its Host is in the host table and reports whether it did.
 // The host proxy sets X-Forwarded-* itself, so rewriteRequestSourceIP is not used here.
+// The access cookie never reaches an app, on either listener.
 func (g *GatewayRoute) serveHost(w http.ResponseWriter, r *http.Request) bool {
 	proxy := g.management.GetHostProxy(r.Host)
 	if proxy == nil {
 		return false
 	}
+	guard.StripCookie(r)
 	proxy.ServeHTTP(w, r)
 	return true
 }
@@ -91,9 +93,11 @@ func (g *GatewayRoute) GetShareRoute() http.Handler {
 }
 
 // codeHost reports a host whose guard config wants an access code: it is served only on the share
-// listener, where the gate runs, never by host routing on the dashboard listener.
+// listener, where the gate runs, never by host routing on the dashboard listener. A broken guard
+// cannot tell which hosts are protected, so every host counts as one.
 func (g *GatewayRoute) codeHost(host string) bool {
-	return g.management.Guard != nil && g.management.Guard.Config().Apps[guard.NormalizeHost(host)].Access == "code"
+	gd := g.management.Guard
+	return gd != nil && (gd.Broken() || gd.Config().Apps[guard.NormalizeHost(host)].Access == "code")
 }
 
 func (g *GatewayRoute) GetRoute() *http.ServeMux {

@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -237,6 +239,57 @@ func TestDashboardListenerSkipsCodeHosts(t *testing.T) {
 	assert.Equal(t, code, http.StatusOK)
 	assert.DeepEqual(t, env.app.list(), []string{appHost + "/x", openHost + "/z"})
 	assert.DeepEqual(t, env.dash.list(), []string{"/v1/y", "/v1/y"})
+}
+
+// A broken guard cannot tell which hosts are protected: the dashboard listener host-routes none.
+func TestDashboardListenerFailsClosedWhileGuardBroken(t *testing.T) {
+	env := newShareEnv(t, nil)
+	rt := t.TempDir()
+	assert.NilError(t, os.WriteFile(filepath.Join(rt, guard.FileName), []byte("{"), 0o600))
+	state := service.NewState()
+	assert.NilError(t, state.SetRuntimePath(t.TempDir()))
+	management := service.NewManagementService(state)
+	dash := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { env.dash.add(r.URL.Path) }))
+	t.Cleanup(dash.Close)
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { env.app.add(r.URL.Path) }))
+	t.Cleanup(app.Close)
+	assert.NilError(t, management.CreateRoute(&model.Route{Path: "/v1", Target: dash.URL}))
+	assert.NilError(t, management.SetHost(service.HostRoute{Host: appHost, Target: app.URL}))
+	var err error
+	management.Guard, err = guard.New(rt, t.TempDir(), time.Now)
+	assert.NilError(t, err)
+	assert.Assert(t, management.Guard.Broken())
+	pub := httptest.NewServer(NewGatewayRoute(management).GetRoute())
+	t.Cleanup(pub.Close)
+
+	code, _ := get(t, pub.URL, appHost, "/x")
+	assert.Equal(t, code, http.StatusNotFound)
+	code, _ = get(t, pub.URL, appHost, "/v1/y")
+	assert.Equal(t, code, http.StatusOK)
+	assert.Equal(t, len(env.app.list()), 0)
+	assert.DeepEqual(t, env.dash.list(), []string{"/v1/y"})
+}
+
+// The access cookie never reaches an app host-routed by the dashboard listener.
+func TestDashboardListenerStripsAccessCookie(t *testing.T) {
+	var appCookie string
+	env := newShareEnv(t, func(w http.ResponseWriter, r *http.Request) { appCookie = r.Header.Get("Cookie") })
+
+	for _, tc := range []struct{ in, want string }{
+		{"a=b; recasaos_access=x", "a=b"},
+		{"recasaos_access=x", ""},
+		{"a=b;c=d", "a=b;c=d"},
+	} {
+		req, err := http.NewRequest(http.MethodGet, env.pub.URL+"/x", nil)
+		assert.NilError(t, err)
+		req.Host = appHost
+		req.Header.Set("Cookie", tc.in)
+		resp, err := http.DefaultClient.Do(req)
+		assert.NilError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, resp.StatusCode, http.StatusOK)
+		assert.Equal(t, appCookie, tc.want, tc.in)
+	}
 }
 
 // Only the app's own 404s count toward a scan ban, not the Gateway's for a host it does not serve.

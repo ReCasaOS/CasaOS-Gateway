@@ -54,6 +54,9 @@ func (g *Guard) accessGate(w http.ResponseWriter, r *http.Request, app AppConfig
 	return true
 }
 
+// StripCookie removes the session cookie from r, for the listeners the gate does not run on.
+func StripCookie(r *http.Request) { takeCookie(r) }
+
 // takeCookie removes every recasaos_access pair from the Cookie header lines and returns their
 // values. Without one, the header is left exactly as it came.
 func takeCookie(r *http.Request) (tokens []string) {
