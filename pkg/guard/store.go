@@ -225,6 +225,9 @@ func (g *Guard) trim(now time.Time) {
 // Record adds a line to the journal, or increments the count of the line it repeats: same key,
 // app, reason and rule within 60 s of that line's first event.
 func (g *Guard) Record(e Event) {
+	if e.Country == "" && e.ASN == 0 && e.ASOrg == "" {
+		e.Country, e.ASN, e.ASOrg = g.geo.lookupIP(e.IP)
+	}
 	g.sm.Lock()
 	defer g.sm.Unlock()
 	now := g.now()
@@ -277,6 +280,7 @@ func (g *Guard) Banned(key string) (Ban, bool) {
 // BanKey bans key for 1 h, 24 h, then 7 days, by strike; strikes are forgotten 30 days after the
 // last ban ended. A key already banned keeps its ban.
 func (g *Guard) BanKey(key, ip, app, reason string) Ban {
+	cc, asn, org := g.geo.lookupIP(ip)
 	g.sm.Lock()
 	defer g.sm.Unlock()
 	now := g.now()
@@ -295,7 +299,7 @@ func (g *Guard) BanKey(key, ip, app, reason string) Ban {
 	case 2:
 		d = 24 * time.Hour
 	}
-	b := Ban{Key: key, IP: ip, App: app, Reason: reason, Since: now, Until: now.Add(d), Strikes: s.Count}
+	b := Ban{Key: key, IP: ip, Country: cc, ASN: asn, ASOrg: org, App: app, Reason: reason, Since: now, Until: now.Add(d), Strikes: s.Count}
 	s.Last = b.Until
 	g.strikes[key] = s
 	g.bans[key] = b

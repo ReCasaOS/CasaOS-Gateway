@@ -189,6 +189,7 @@ type Guard struct {
 	store
 	counters
 	country, waf, gate hook // filled by the country filter, the WAF and the access gate; nil passes
+	geo                *Geo
 
 	mu         sync.RWMutex
 	cfg        Config
@@ -198,8 +199,9 @@ type Guard struct {
 
 // New loads guard.json from runtimePath when it exists. A file that cannot be used does not stop
 // the Gateway (it serves the dashboard too): the guard starts Broken and the error is logged.
-func New(runtimePath, dataPath string, now func() time.Time) (*Guard, error) {
-	g := &Guard{runtimePath: runtimePath, dataPath: dataPath, now: now}
+func New(runtimePath, dataPath, geoPath string, now func() time.Time) (*Guard, error) {
+	g := &Guard{runtimePath: runtimePath, dataPath: dataPath, now: now, geo: openGeo(geoPath, now)}
+	g.country = g.countryFilter
 	g.rates, g.rateStrikes, g.scans, g.codes = map[counterKey]*rateWin{}, map[counterKey]*hits{}, map[counterKey]*hits{}, map[counterKey]*hits{}
 	g.gate = g.accessGate
 
@@ -289,12 +291,13 @@ func (g *Guard) Configured() bool {
 	return g.configured
 }
 
-// Status: geo stays false until the geo lookup fills it.
 func (g *Guard) Status() Status {
 	used, waves := g.usage()
+	c, a := g.geo.Loaded()
 	return Status{
 		Version:        1,
 		Configured:     g.Configured(),
+		Geo:            GeoStatus{Country: c, ASN: a},
 		PeopleLastUsed: used,
 		Waves:          waves,
 	}

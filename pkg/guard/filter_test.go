@@ -122,7 +122,7 @@ func TestBrokenAnswers503UntilSetConfig(t *testing.T) {
 	c := startClock()
 	rt := t.TempDir()
 	assert.NilError(t, os.WriteFile(filepath.Join(rt, FileName), []byte("{"), 0o600))
-	g, err := New(rt, t.TempDir(), c.now)
+	g, err := New(rt, t.TempDir(), "", c.now)
 	assert.NilError(t, err)
 	assert.Assert(t, g.Broken())
 	a := &fakeApp{}

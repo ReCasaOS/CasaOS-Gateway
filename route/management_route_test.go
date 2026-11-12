@@ -57,7 +57,7 @@ func setup(t *testing.T) func(t *testing.T) {
 	_secret = "Internal " + strings.TrimSpace(string(raw))
 
 	management := service.NewManagementService(_state)
-	if management.Guard, err = guard.New(tmpdir, tmpdir, time.Now); err != nil {
+	if management.Guard, err = guard.New(tmpdir, tmpdir, "", time.Now); err != nil {
 		t.Fatal(err)
 	}
 	_guard = management.Guard

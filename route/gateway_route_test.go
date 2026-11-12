@@ -220,7 +220,7 @@ func TestDashboardListenerSkipsCodeHosts(t *testing.T) {
 	assert.DeepEqual(t, env.app.list(), []string{appHost + "/x"})
 
 	var err error
-	management.Guard, err = guard.New(t.TempDir(), t.TempDir(), time.Now)
+	management.Guard, err = guard.New(t.TempDir(), t.TempDir(), "", time.Now)
 	assert.NilError(t, err)
 	pol := guard.Policy{WAF: "off", Countries: guard.Countries{Mode: "none"}, RatePerMin: 600, Ban: guard.BanRules{
 		WAFHits: 10, WAFWindowS: 600, Scan404: 100, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}}
@@ -256,7 +256,7 @@ func TestDashboardListenerFailsClosedWhileGuardBroken(t *testing.T) {
 	assert.NilError(t, management.CreateRoute(&model.Route{Path: "/v1", Target: dash.URL}))
 	assert.NilError(t, management.SetHost(service.HostRoute{Host: appHost, Target: app.URL}))
 	var err error
-	management.Guard, err = guard.New(rt, t.TempDir(), time.Now)
+	management.Guard, err = guard.New(rt, t.TempDir(), "", time.Now)
 	assert.NilError(t, err)
 	assert.Assert(t, management.Guard.Broken())
 	pub := httptest.NewServer(NewGatewayRoute(management).GetRoute())
@@ -302,7 +302,7 @@ func TestShareScanCountsOnlyTheAppsAnswers(t *testing.T) {
 	management := service.NewManagementService(state)
 	assert.NilError(t, management.SetHost(service.HostRoute{Host: appHost, Target: app.URL}))
 	var err error
-	management.Guard, err = guard.New(t.TempDir(), t.TempDir(), time.Now)
+	management.Guard, err = guard.New(t.TempDir(), t.TempDir(), "", time.Now)
 	assert.NilError(t, err)
 	pol := guard.Policy{WAF: "off", Countries: guard.Countries{Mode: "none"}, RatePerMin: 600, Ban: guard.BanRules{
 		WAFHits: 10, WAFWindowS: 600, Scan404: 3, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}}

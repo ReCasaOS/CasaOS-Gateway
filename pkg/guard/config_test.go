@@ -95,7 +95,7 @@ func TestSetConfigPersists(t *testing.T) {
 	rt, data := t.TempDir(), t.TempDir()
 	now := func() time.Time { return time.Unix(0, 0) }
 
-	g, err := New(rt, data, now)
+	g, err := New(rt, data, "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestSetConfigPersists(t *testing.T) {
 		t.Fatal("a bad config must be refused")
 	}
 
-	g2, err := New(rt, data, now)
+	g2, err := New(rt, data, "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestSetConfigPersists(t *testing.T) {
 
 func TestCorruptFileStartsBroken(t *testing.T) {
 	rt := t.TempDir()
-	g, err := New(rt, t.TempDir(), time.Now)
+	g, err := New(rt, t.TempDir(), "", time.Now)
 	if err != nil || g.Broken() {
 		t.Fatalf("a missing file is the normal unconfigured state: err=%v broken=%v", err, g.Broken())
 	}
@@ -152,7 +152,7 @@ func TestCorruptFileStartsBroken(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(rt, FileName), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		g, err := New(rt, t.TempDir(), time.Now)
+		g, err := New(rt, t.TempDir(), "", time.Now)
 		if err != nil {
 			t.Fatalf("New must not fail on a corrupt file: %v", err)
 		}
@@ -169,7 +169,7 @@ func TestCorruptFileStartsBroken(t *testing.T) {
 }
 
 func TestStatusNeverNull(t *testing.T) {
-	g, err := New(t.TempDir(), t.TempDir(), time.Now)
+	g, err := New(t.TempDir(), t.TempDir(), "", time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

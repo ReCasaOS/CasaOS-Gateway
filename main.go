@@ -44,6 +44,7 @@ var (
 	_httpsPortServed string
 	_gatewayAddress string
 	_dataPath       string
+	_geoPath        string
 	_guard          *guard.Guard
 	_picker         *common.CertPicker // nil when it could not be built: see the gateway hook
 
@@ -92,6 +93,7 @@ func setup() {
 	}
 
 	_dataPath = config.GetString(common.ConfigKeyDataPath)
+	_geoPath = config.GetString(common.ConfigKeyGeoPath)
 
 	gatewayPort := config.GetString(common.ConfigKeyGatewayPort)
 	if err := _state.SetGatewayPort(gatewayPort); err != nil {
@@ -193,7 +195,7 @@ func main() {
 			m := service.NewManagementService(state)
 
 			var err error
-			m.Guard, err = guard.New(state.GetRuntimePath(), _dataPath, time.Now)
+			m.Guard, err = guard.New(state.GetRuntimePath(), _dataPath, _geoPath, time.Now)
 			_guard = m.Guard
 
 			go func() {

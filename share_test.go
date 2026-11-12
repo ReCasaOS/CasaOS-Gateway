@@ -211,7 +211,7 @@ func TestShareListenerRefusesABlockedVisitor(t *testing.T) {
 	if err := mgmt.SetHost(service.HostRoute{Host: shareHost, Target: backend.URL}); err != nil {
 		t.Fatal(err)
 	}
-	if mgmt.Guard, err = guard.New(dir, dir, time.Now); err != nil {
+	if mgmt.Guard, err = guard.New(dir, dir, "", time.Now); err != nil {
 		t.Fatal(err)
 	}
 	ban := guard.BanRules{WAFHits: 10, WAFWindowS: 600, Scan404: 100, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}
@@ -273,7 +273,7 @@ func TestShareWebSocketWithAccessCookie(t *testing.T) {
 	if err := mgmt.SetHost(service.HostRoute{Host: shareHost, Target: backend.URL}); err != nil {
 		t.Fatal(err)
 	}
-	if mgmt.Guard, err = guard.New(dir, dir, time.Now); err != nil {
+	if mgmt.Guard, err = guard.New(dir, dir, "", time.Now); err != nil {
 		t.Fatal(err)
 	}
 	secret := make([]byte, 32)

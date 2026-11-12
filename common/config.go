@@ -29,6 +29,7 @@ const (
 	ConfigKeyRuntimePath    = "common.RuntimePath"
 	// Where the Gateway keeps state that must survive a reboot (the runtime path is tmpfs).
 	ConfigKeyDataPath = "gateway.DataPath"
+	ConfigKeyGeoPath  = "gateway.GeoPath"
 
 	// Written to the runtime path: the address the core pipes the tunnel's visitor connections into.
 	ShareAddrFilename = "share.addr"
@@ -45,6 +46,7 @@ func LoadConfig() (*viper.Viper, error) {
 	config.SetDefault(ConfigKeyLogFileExt, "log")
 
 	config.SetDefault(ConfigKeyDataPath, "/var/lib/casaos/gateway")
+	config.SetDefault(ConfigKeyGeoPath, "/var/lib/casaos/geo")
 	config.SetDefault(ConfigKeyRuntimePath, constants.DefaultRuntimePath) // See https://refspecs.linuxfoundation.org/FHS_3.0/fhs/ch05s13.html
 
 	config.SetConfigName(GatewayName)

@@ -18,7 +18,7 @@ func (c *clock) add(d time.Duration) { c.t = c.t.Add(d) }
 
 func newTestGuard(t *testing.T, dir string, c *clock) *Guard {
 	t.Helper()
-	g, err := New(t.TempDir(), dir, c.now)
+	g, err := New(t.TempDir(), dir, "", c.now)
 	assert.NilError(t, err)
 	return g
 }
