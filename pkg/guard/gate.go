@@ -18,6 +18,7 @@ const (
 	sessionRefresh = 24 * time.Hour
 	formMax        = 4 << 10
 	nextMax        = 1 << 10
+	tokensMax      = 8 // access cookies checked per request
 )
 
 // accessGate is the gate hook (step 7), run for every host in Apps. It always takes the session
@@ -87,11 +88,11 @@ func takeCookie(r *http.Request) (tokens []string) {
 }
 
 // session returns the person of the first token that is signed, under 30 days old, of the
-// person's current generation, and for a person whose code opens app. Any token may be the good
-// one: a sibling app on the box domain can plant a stale cookie beside it.
+// person's current generation, and for a person whose code opens app. Any of the first 8 tokens may
+// be the good one: a sibling app on the box domain can plant a stale cookie beside it.
 func (g *Guard) session(cfg Config, tokens []string, app AppConfig) (Person, time.Time, bool) {
 	now := g.now()
-	for _, t := range tokens {
+	for _, t := range tokens[:min(len(tokens), tokensMax)] {
 		id, gen, issued, ok := ParseSession(cfg.Secret, t)
 		if !ok || now.Sub(issued) >= sessionLife {
 			continue

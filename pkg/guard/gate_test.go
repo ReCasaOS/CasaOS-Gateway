@@ -365,3 +365,19 @@ func TestGateWorksWithProtectionOff(t *testing.T) {
 	assert.Equal(t, postCode(h, gh, visitorIP, url.Values{"code": {goodCode}}).Code, http.StatusSeeOther)
 	assert.Equal(t, a.hits, 0)
 }
+
+// Only the first 8 access cookies are checked; every one of them is still stripped.
+func TestSessionChecksFirstEightTokens(t *testing.T) {
+	cfg := codeConfig(true)
+	_, c, a, h := setup(t, &cfg)
+	junk := func(n int) string { return strings.Repeat(CookieName+"=junk; ", n) }
+	good := sessionCookie("p1", 1, c.now())
+
+	assert.Equal(t, get(h, gh, visitorIP, "/", "Cookie", junk(7)+good+"; a=b").Code, http.StatusOK)
+	assert.DeepEqual(t, a.seen.Header.Values("Cookie"), []string{"a=b"})
+	assert.Equal(t, get(h, gh, visitorIP, "/", "Cookie", junk(8)+good).Code, http.StatusUnauthorized)
+	assert.Equal(t, a.hits, 1)
+
+	get(h, ghOpen, visitorIP, "/", "Cookie", junk(12)+good+"; a=b")
+	assert.DeepEqual(t, a.seen.Header.Values("Cookie"), []string{"a=b"})
+}
