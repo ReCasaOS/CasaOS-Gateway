@@ -44,6 +44,7 @@ var (
 	_httpsPortServed string
 	_gatewayAddress string
 	_dataPath       string
+	_guard          *guard.Guard
 	_picker         *common.CertPicker // nil when it could not be built: see the gateway hook
 
 	_managementServiceReady = make(chan struct{})
@@ -147,6 +148,15 @@ func main() {
 		pidFilename, external.ManagementURLFilename, external.StaticURLFilename, common.ShareAddrFilename,
 	)
 
+	// the guard's bans and journal are written every 30 s when they changed, and once more on the way out
+	defer func() {
+		if _guard != nil {
+			if err := _guard.Flush(); err != nil {
+				logger.Error("Failed to save guard state", zap.Error(err))
+			}
+		}
+	}()
+
 	defer func() {
 		if _gateway != nil {
 			if err := _gateway.Shutdown(context.Background()); err != nil {
@@ -184,6 +194,15 @@ func main() {
 
 			var err error
 			m.Guard, err = guard.New(state.GetRuntimePath(), _dataPath, time.Now)
+			_guard = m.Guard
+
+			go func() {
+				for range time.Tick(30 * time.Second) {
+					if err := m.Guard.Flush(); err != nil {
+						logger.Error("Failed to save guard state", zap.Error(err))
+					}
+				}
+			}()
 
 			return m, err
 		}),

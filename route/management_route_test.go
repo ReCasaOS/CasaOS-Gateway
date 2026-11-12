@@ -388,6 +388,9 @@ func TestGuardRoutesAreAbsentWithoutAGuard(t *testing.T) {
 
 	assert.Equal(t, http.StatusNotFound, hostCall(http.MethodGet, "/v1/gateway/guard", "").Code)
 	assert.Equal(t, http.StatusNotFound, hostCall(http.MethodPut, "/v1/gateway/guard", "{}").Code)
+	assert.Equal(t, http.StatusNotFound, hostCall(http.MethodGet, "/v1/gateway/guard/events", "").Code)
+	assert.Equal(t, http.StatusNotFound, hostCall(http.MethodGet, "/v1/gateway/guard/bans", "").Code)
+	assert.Equal(t, http.StatusNotFound, hostCall(http.MethodDelete, "/v1/gateway/guard/bans/x", "").Code)
 }
 
 func TestGuardRoutes(t *testing.T) {
@@ -423,4 +426,29 @@ func TestGuardRoutes(t *testing.T) {
 	w = httptest.NewRecorder()
 	_router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestGuardEventsAndBansRoutes(t *testing.T) {
+	defer setup(t)(t)
+
+	_guard.Record(guard.Event{Key: "203.0.113.9", IP: "203.0.113.9", App: "jellyfin", Reason: "scan", Action: "banned"})
+	_guard.BanKey("203.0.113.9", "203.0.113.9", "jellyfin", "scan")
+	_guard.BanKey("2001:db8::/64", "2001:db8::1", "jellyfin", "waf")
+
+	w := hostCall(http.MethodGet, "/v1/gateway/guard/events?app=jellyfin&reason=scan", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Assert(t, strings.Contains(w.Body.String(), `"reason":"scan"`), w.Body.String())
+	w = hostCall(http.MethodGet, "/v1/gateway/guard/events?reason=nothing", "")
+	assert.Equal(t, strings.TrimSpace(w.Body.String()), "[]")
+
+	w = hostCall(http.MethodGet, "/v1/gateway/guard/bans", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 2, strings.Count(w.Body.String(), `"strikes":1`), w.Body.String())
+
+	assert.Equal(t, http.StatusNoContent, hostCall(http.MethodDelete, "/v1/gateway/guard/bans/2001:db8::%2F64", "").Code)
+	_, ok := _guard.Banned("2001:db8::/64")
+	assert.Assert(t, !ok)
+	_, ok = _guard.Banned("203.0.113.9")
+	assert.Assert(t, ok)
+	assert.Equal(t, http.StatusNoContent, hostCall(http.MethodDelete, "/v1/gateway/guard/bans/nope", "").Code)
 }

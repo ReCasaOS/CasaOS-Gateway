@@ -179,8 +179,10 @@ type Wave struct {
 
 type Guard struct {
 	runtimePath string
-	dataPath    string // guard-state.json lives here, from a later task on
+	dataPath    string // guard-state.json lives here
 	now         func() time.Time
+
+	store
 
 	mu         sync.RWMutex
 	cfg        Config
@@ -202,6 +204,7 @@ func New(runtimePath, dataPath string, now func() time.Time) (*Guard, error) {
 	default:
 		g.cfg, g.configured = c, true
 	}
+	g.loadState()
 	return g, nil
 }
 
@@ -277,12 +280,13 @@ func (g *Guard) Configured() bool {
 	return g.configured
 }
 
-// Status: geo, people_last_used and waves stay empty until the geo lookup and the bans fill them.
+// Status: geo stays false until the geo lookup fills it.
 func (g *Guard) Status() Status {
+	used, waves := g.usage()
 	return Status{
 		Version:        1,
 		Configured:     g.Configured(),
-		PeopleLastUsed: map[string]time.Time{},
-		Waves:          []Wave{},
+		PeopleLastUsed: used,
+		Waves:          waves,
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
@@ -185,6 +186,38 @@ func (m *ManagementRoute) buildV1RouteGroup(v1Group *echo.Group) {
 
 				return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 			}
+
+			return ctx.NoContent(http.StatusNoContent)
+		})
+
+		v1GatewayGroup.GET("/guard/events", func(ctx echo.Context) error {
+			if m.management.Guard == nil {
+				return ctx.NoContent(http.StatusNotFound)
+			}
+
+			limit, _ := strconv.Atoi(ctx.QueryParam("limit"))
+
+			return ctx.JSON(http.StatusOK, m.management.Guard.Events(ctx.QueryParam("app"), ctx.QueryParam("reason"), limit))
+		})
+
+		v1GatewayGroup.GET("/guard/bans", func(ctx echo.Context) error {
+			if m.management.Guard == nil {
+				return ctx.NoContent(http.StatusNotFound)
+			}
+
+			return ctx.JSON(http.StatusOK, m.management.Guard.Bans())
+		})
+
+		v1GatewayGroup.DELETE("/guard/bans/:key", func(ctx echo.Context) error {
+			if m.management.Guard == nil {
+				return ctx.NoContent(http.StatusNotFound)
+			}
+
+			key := ctx.Param("key")
+			if k, err := url.PathUnescape(key); err == nil { // the router may leave %2F escaped
+				key = k
+			}
+			m.management.Guard.Unban(key)
 
 			return ctx.NoContent(http.StatusNoContent)
 		})
