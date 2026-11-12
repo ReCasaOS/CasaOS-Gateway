@@ -1,7 +1,10 @@
 package guard
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,20 +93,26 @@ func TestJournalGroupsAndTrims(t *testing.T) {
 	g.Record(e)
 	assert.Equal(t, len(g.Events("", "", 10)), 1)
 
-	// beyond 10 000 lines: oldest dropped
-	for i := 0; i < 10005; i++ {
+	// past 11 000 lines: cut back to the newest 10 000, in one go
+	lines := func() int {
+		g.sm.Lock()
+		defer g.sm.Unlock()
+		return len(g.journal)
+	}
+	for i := 0; i < 10999; i++ {
 		x := e
 		x.Key = fmt.Sprint("k", i)
 		g.Record(x)
 	}
-	g.sm.Lock()
-	n := len(g.journal)
-	g.sm.Unlock()
-	assert.Equal(t, n, 10000)
+	assert.Equal(t, lines(), 11000)
+	x := e
+	x.Key = "k10999"
+	g.Record(x)
+	assert.Equal(t, lines(), 10000)
 	g.sm.Lock()
 	assert.Assert(t, len(g.last) <= 10000, len(g.last))
 	g.sm.Unlock()
-	assert.Equal(t, g.Events("", "", 1)[0].Key, "k10004")
+	assert.Equal(t, g.Events("", "", 1)[0].Key, "k10999")
 }
 
 func TestStoreSurvivesRestart(t *testing.T) {
@@ -227,4 +236,63 @@ func TestWaveStartsPrunedWhenABanStarts(t *testing.T) {
 	g.sm.Lock()
 	assert.Equal(t, len(g.starts), 1)
 	g.sm.Unlock()
+}
+
+// Bans, strikes and last uses are written at the next tick; a journal-only change waits up to
+// 10 minutes since the last write; Flush (shutdown) writes whatever changed.
+func TestFlushCadence(t *testing.T) {
+	c := startClock()
+	dir := t.TempDir()
+	g := newTestGuard(t, dir, c)
+	path := filepath.Join(dir, StateFileName)
+	saved := func() stateFile {
+		t.Helper()
+		var st stateFile
+		raw, err := os.ReadFile(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return st
+		}
+		assert.NilError(t, err)
+		assert.NilError(t, json.Unmarshal(raw, &st))
+		return st
+	}
+	ev := func(key string) { g.Record(Event{Key: key, IP: key, App: "a", Reason: "scan", Action: "blocked"}) }
+
+	ev("k1")
+	c.add(30 * time.Second)
+	assert.NilError(t, g.FlushDue())
+	_, err := os.Stat(path)
+	assert.Assert(t, errors.Is(err, fs.ErrNotExist))
+	c.add(9 * time.Minute)
+	assert.NilError(t, g.FlushDue())
+	assert.Equal(t, len(saved().Events), 0)
+	c.add(30 * time.Second) // 10 minutes since the guard started
+	assert.NilError(t, g.FlushDue())
+	assert.Equal(t, len(saved().Events), 1)
+
+	ev("k2")
+	c.add(30 * time.Second)
+	assert.NilError(t, g.FlushDue())
+	assert.Equal(t, len(saved().Events), 1)
+	g.NoteUse("p_1")
+	assert.NilError(t, g.FlushDue())
+	st := saved()
+	assert.Equal(t, len(st.Events), 2)
+	assert.Equal(t, len(st.Used), 1)
+
+	ev("k3")
+	c.add(30 * time.Second)
+	assert.NilError(t, g.FlushDue())
+	assert.Equal(t, len(saved().Events), 2)
+	g.BanKey("k3", "k3", "a", "scan")
+	assert.NilError(t, g.FlushDue())
+	st = saved()
+	assert.Equal(t, len(st.Events), 3)
+	assert.Equal(t, len(st.Bans), 1)
+
+	ev("k4")
+	assert.NilError(t, g.FlushDue())
+	assert.Equal(t, len(saved().Events), 3)
+	assert.NilError(t, g.Flush())
+	assert.Equal(t, len(saved().Events), 4)
 }

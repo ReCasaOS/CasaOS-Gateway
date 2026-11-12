@@ -150,7 +150,7 @@ func main() {
 		pidFilename, external.ManagementURLFilename, external.StaticURLFilename, common.ShareAddrFilename,
 	)
 
-	// the guard's bans and journal are written every 30 s when they changed, and once more on the way out
+	// the guard's bans are written within 30 s, its journal alone within 10 minutes, and all once more on the way out
 	defer func() {
 		if _guard != nil {
 			if err := _guard.Flush(); err != nil {
@@ -200,7 +200,7 @@ func main() {
 
 			go func() {
 				for range time.Tick(30 * time.Second) {
-					if err := m.Guard.Flush(); err != nil {
+					if err := m.Guard.FlushDue(); err != nil {
 						logger.Error("Failed to save guard state", zap.Error(err))
 					}
 				}

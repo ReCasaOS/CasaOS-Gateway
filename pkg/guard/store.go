@@ -20,6 +20,8 @@ const StateFileName = "guard-state.json"
 const (
 	journalMaxAge   = 7 * 24 * time.Hour
 	journalMaxLines = 10000
+	journalSlack    = 1000 // the journal is cut back to 10 000 lines once it passes 11 000
+	journalEvery    = 10 * time.Minute
 	groupWindow     = 60 * time.Second
 	strikeMemory    = 30 * 24 * time.Hour
 	waveWindow      = 10 * time.Minute
@@ -72,17 +74,19 @@ type waveStart struct {
 	at  time.Time
 }
 
-// store is in memory under sm; the caller (main) runs Flush every 30 s and on shutdown.
+// store is in memory under sm; the caller (main) runs FlushDue every 30 s and Flush on shutdown.
 type store struct {
-	sm      sync.RWMutex
-	flushMu sync.Mutex // one Flush at a time; the write happens outside sm
-	dirty   bool
-	journal []*Event // oldest first
-	last    map[groupKey]*Event
-	bans    map[string]Ban
-	strikes map[string]strike
-	used    map[string]time.Time
-	starts  []waveStart // shortcut: waves are forgotten at restart, they last 10 minutes
+	sm           sync.RWMutex
+	flushMu      sync.Mutex // one flush at a time; the write happens outside sm
+	dirty        bool       // bans, strikes or last uses changed: written at the next tick
+	journalDirty bool       // the journal changed: written at most every 10 minutes
+	wrote        time.Time  // the last write, or the load
+	journal      []*Event   // oldest first
+	last         map[groupKey]*Event
+	bans         map[string]Ban
+	strikes      map[string]strike
+	used         map[string]time.Time
+	starts       []waveStart // shortcut: waves are forgotten at restart, they last 10 minutes
 }
 
 type stateFile struct {
@@ -103,6 +107,7 @@ func (g *Guard) loadState() {
 	g.sm.Lock()
 	defer g.sm.Unlock()
 	g.reset()
+	g.wrote = g.now()
 
 	raw, err := os.ReadFile(filepath.Join(g.dataPath, StateFileName))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -148,18 +153,24 @@ func (g *Guard) pruneStrikes(now time.Time) {
 	}
 }
 
-// Flush writes guard-state.json by rename when something changed since the last Flush. The state
-// is copied under the lock; marshalling and writing happen outside it.
-func (g *Guard) Flush() error {
+// Flush writes guard-state.json by rename when anything changed since the last write (shutdown).
+func (g *Guard) Flush() error { return g.flush(true) }
+
+// FlushDue is the 30 s tick: it writes when bans, strikes or last uses changed, but for a change of
+// the journal alone only 10 minutes after the last write (a box may run on an SD card).
+func (g *Guard) FlushDue() error { return g.flush(false) }
+
+// flush copies the state under the lock; marshalling and writing happen outside it.
+func (g *Guard) flush(all bool) error {
 	g.flushMu.Lock()
 	defer g.flushMu.Unlock()
 
 	g.sm.Lock()
-	if !g.dirty {
+	now := g.now()
+	if !g.dirty && !(g.journalDirty && (all || now.Sub(g.wrote) >= journalEvery)) {
 		g.sm.Unlock()
 		return nil
 	}
-	now := g.now()
 	g.pruneStrikes(now)
 	for k, b := range g.bans {
 		if !b.Until.After(now) {
@@ -180,7 +191,7 @@ func (g *Guard) Flush() error {
 	for k, v := range g.used {
 		st.Used[k] = v
 	}
-	g.dirty = false
+	g.dirty, g.journalDirty, g.wrote = false, false, now
 	g.sm.Unlock()
 
 	err := g.writeState(st)
@@ -203,14 +214,15 @@ func (g *Guard) writeState(st stateFile) error {
 	return writeFileAtomic(filepath.Join(g.dataPath, StateFileName), raw)
 }
 
-// trim drops lines older than 7 days, then the oldest beyond 10 000.
+// trim drops lines older than 7 days, then, once the journal passes 11 000 lines, the oldest beyond
+// 10 000 (in one cut, not one copy per line).
 func (g *Guard) trim(now time.Time) {
 	i := 0
 	for i < len(g.journal) && now.Sub(g.journal[i].Time) > journalMaxAge {
 		i++
 	}
-	if n := len(g.journal) - i - journalMaxLines; n > 0 {
-		i += n
+	if n := len(g.journal) - i; n > journalMaxLines+journalSlack {
+		i += n - journalMaxLines
 	}
 	for _, e := range g.journal[:i] {
 		if gk := (groupKey{e.Key, e.App, e.Reason, e.Action, e.Rule}); g.last[gk] == e {
@@ -237,7 +249,7 @@ func (g *Guard) Record(e Event) {
 	if e.Count < 1 {
 		e.Count = 1
 	}
-	g.dirty = true
+	g.journalDirty = true
 	gk := groupKey{e.Key, e.App, e.Reason, e.Action, e.Rule}
 	if p := g.last[gk]; p != nil && e.Time.Sub(p.Time) < groupWindow {
 		p.Count += e.Count
