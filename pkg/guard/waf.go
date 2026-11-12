@@ -8,9 +8,12 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	coreruleset "github.com/corazawaf/coraza-coreruleset/v4"
 	"github.com/corazawaf/coraza/v3"
+	"github.com/corazawaf/coraza/v3/experimental/plugins/plugintypes"
 	"github.com/corazawaf/coraza/v3/types"
 )
 
@@ -18,9 +21,9 @@ import (
 const (
 	wafHead = `Include @coraza.conf-recommended
 SecRuleEngine On
-SecRequestBodyLimit 65536
-SecRequestBodyNoFilesLimit 65536
-SecRequestBodyInMemoryLimit 65536
+SecRequestBodyLimit %[1]d
+SecRequestBodyNoFilesLimit %[1]d
+SecRequestBodyInMemoryLimit %[1]d
 SecRequestBodyLimitAction ProcessPartial
 SecResponseBodyAccess Off
 SecAuditEngine Off
@@ -30,6 +33,9 @@ SecRule REQBODY_ERROR "!@eq 0" "id:9100001,phase:2,t:none,log,deny,status:400,ms
 Include @crs-setup.conf.example
 SecAction "id:9100000,phase:1,pass,nolog,t:none,setvar:tx.blocking_paranoia_level=1,setvar:'tx.allowed_methods=GET HEAD POST OPTIONS PUT PATCH DELETE PROPFIND PROPPATCH MKCOL COPY MOVE LOCK UNLOCK REPORT'"
 `
+	wafBodyLimit  = 64 << 10 // bytes of a body inspected
+	inspectSlots  = 2        // body inspections at once for the whole box; 1 per key
+	inspectWait   = 2 * time.Second
 	hostRuleFirst = 9100100 // per-host rules: 9100100 to 9199999
 	hostRuleLast  = 9199999
 	detailMax     = 200
@@ -53,7 +59,7 @@ func buildWAF(apps map[string]AppConfig) (coraza.WAF, error) {
 	}
 	sort.Strings(hosts) // stable rule ids
 	var d strings.Builder
-	d.WriteString(wafHead)
+	fmt.Fprintf(&d, wafHead, wafBodyLimit)
 	for i, h := range hosts {
 		off := apps[h].Policy.RulesOff
 		if len(off) == 0 {
@@ -74,8 +80,9 @@ func buildWAF(apps map[string]AppConfig) (coraza.WAF, error) {
 }
 
 // wafFilter is the WAF hook (step 6). It inspects the request only (headers, then the first 64 KiB of
-// the body, which the app still receives whole); a request the CRS would interrupt is journaled,
-// and on "block" answered 403 and counted toward a ban.
+// a body Coraza parses, which the app still receives whole); a request the CRS would interrupt is
+// journaled, and on "block" answered 403 and counted toward a ban. Body inspections are capped (see
+// slots): one that gets no slot within 2 s is answered 503.
 func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig) bool {
 	mode := app.Policy.WAF
 	if mode == "off" || (app.Access == "code" && r.URL.Path == EntryPath) { // the gate's own form
@@ -105,15 +112,30 @@ func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig)
 		tx.AddRequestHeader("Transfer-Encoding", te)
 	}
 	if tx.ProcessRequestHeaders() == nil {
-		if r.Body != nil && r.Body != http.NoBody {
-			var seen bytes.Buffer // what the WAF consumed, at most the body limit; the app reads it, then the rest
-			_, _, _ = tx.ReadRequestBodyFrom(io.TeeReader(r.Body, &seen))
+		// Only a body Coraza parses (form, multipart, JSON, XML) is worth reading: the others reach no rule.
+		parsed := tx.(plugintypes.TransactionState).Variables().RequestBodyProcessor().Get() != ""
+		if parsed && r.Body != nil && r.Body != http.NoBody {
+			// read before taking a slot, so a slow client cannot hold one
+			seen, _ := io.ReadAll(io.LimitReader(r.Body, wafBodyLimit))
 			r.Body = struct {
 				io.Reader
 				io.Closer
-			}{io.MultiReader(&seen, r.Body), r.Body}
+			}{io.MultiReader(bytes.NewReader(seen), r.Body), r.Body} // the app reads what the WAF read, then the rest
+			release, ok := g.slots.take(key, g.inspectWait)
+			if !ok { // never pass uninspected; not counted toward a ban
+				g.Record(Event{IP: ip, Key: key, App: app.App, Path: eventPath(r), Reason: "waf", Detail: "inspection busy", Action: "blocked"})
+				deny(w, r, http.StatusServiceUnavailable)
+				return true
+			}
+			if g.inspecting != nil {
+				g.inspecting()
+			}
+			_, _, _ = tx.ReadRequestBodyFrom(bytes.NewReader(seen))
+			_, _ = tx.ProcessRequestBody()
+			release()
+		} else {
+			_, _ = tx.ProcessRequestBody()
 		}
-		_, _ = tx.ProcessRequestBody()
 	}
 	it := tx.Interruption()
 	if it == nil {
@@ -143,6 +165,56 @@ func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig)
 	g.Record(ev)
 	deny(w, r, http.StatusForbidden)
 	return true
+}
+
+// slots caps the body inspections running at once (CPU): inspectSlots for the box, one per key.
+type slots struct {
+	box  chan struct{}
+	mu   sync.Mutex
+	keys map[string]*keySlot // only keys with a request holding or waiting for their slot
+}
+
+type keySlot struct {
+	ch    chan struct{}
+	users int
+}
+
+func newSlots(n int) *slots { return &slots{box: make(chan struct{}, n), keys: map[string]*keySlot{}} }
+
+// take waits up to wait for the key's slot, then one of the box's; release gives both back.
+func (s *slots) take(key string, wait time.Duration) (release func(), ok bool) {
+	s.mu.Lock()
+	k := s.keys[key]
+	if k == nil {
+		k = &keySlot{ch: make(chan struct{}, 1)}
+		s.keys[key] = k
+	}
+	k.users++
+	s.mu.Unlock()
+	leave := func() {
+		s.mu.Lock()
+		if k.users--; k.users == 0 {
+			delete(s.keys, key)
+		}
+		s.mu.Unlock()
+	}
+
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case k.ch <- struct{}{}:
+	case <-t.C:
+		leave()
+		return nil, false
+	}
+	select {
+	case s.box <- struct{}{}:
+	case <-t.C:
+		<-k.ch
+		leave()
+		return nil, false
+	}
+	return func() { <-s.box; <-k.ch; leave() }, true
 }
 
 // decidingRule is the rule that denied, or when that is the anomaly score total (949xxx) the first

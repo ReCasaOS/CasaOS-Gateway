@@ -191,6 +191,9 @@ type Guard struct {
 	counters
 	country, waf, gate hook // filled by the country filter, the WAF and the access gate; nil passes
 	geo                *Geo
+	slots              *slots        // body inspections running
+	inspectWait        time.Duration // longest wait for a slot
+	inspecting         func()        // test hook, run while a body inspection holds its slot
 
 	mu         sync.RWMutex
 	cfg        Config
@@ -205,7 +208,7 @@ func New(runtimePath, dataPath, geoPath string, now func() time.Time) (*Guard, e
 	g := &Guard{runtimePath: runtimePath, dataPath: dataPath, now: now, geo: openGeo(geoPath, now)}
 	g.country = g.countryFilter
 	g.rates, g.rateStrikes, g.scans, g.codes, g.wafHits = map[counterKey]*rateWin{}, map[counterKey]*hits{}, map[counterKey]*hits{}, map[counterKey]*hits{}, map[counterKey]*hits{}
-	g.waf = g.wafFilter
+	g.waf, g.slots, g.inspectWait = g.wafFilter, newSlots(inspectSlots), inspectWait
 	g.gate = g.accessGate
 
 	c, err := load(filepath.Join(runtimePath, FileName))

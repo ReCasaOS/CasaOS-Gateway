@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -325,4 +326,105 @@ func TestHostileHostRefused(t *testing.T) {
 	cfg.Apps[`evil" "id:1,phase:1,pass,ctl:ruleengine=off`] = cfg.Apps[jf]
 	_, err := buildWAF(cfg.Apps)
 	assert.Assert(t, errors.Is(err, ErrInvalid), "%v", err)
+}
+
+// slowGuard is a guard on block whose body inspections wait, inside their slot, until let is closed
+// or written to; each one announces itself on in.
+func slowGuard(t *testing.T) (g *Guard, h http.Handler, hits *atomic.Int32, in chan struct{}, let chan struct{}) {
+	t.Helper()
+	g = newTestGuard(t, t.TempDir(), startClock())
+	assert.NilError(t, g.SetConfig(wafConfig("block", nil)))
+	in, let, hits = make(chan struct{}, 8), make(chan struct{}), &atomic.Int32{}
+	g.inspecting = func() { in <- struct{}{}; <-let }
+	h = g.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	return
+}
+
+func postForm(h http.Handler, ip string) int {
+	r := httptest.NewRequest(http.MethodPost, "http://"+jf+"/login", strings.NewReader("user=bob&remember=1"))
+	r.RemoteAddr = net.JoinHostPort(ip, "4444")
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Content-Length", "19")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w.Code
+}
+
+// entered waits briefly for an inspection to start; false when none does.
+func entered(in chan struct{}) bool {
+	select {
+	case <-in:
+		return true
+	case <-time.After(150 * time.Millisecond):
+		return false
+	}
+}
+
+func TestBodyInspectionsCappedPerBox(t *testing.T) {
+	g, h, hits, in, let := slowGuard(t)
+	codes := make(chan int, 3)
+	for _, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"} {
+		go func() { codes <- postForm(h, ip) }()
+	}
+	assert.Assert(t, entered(in))
+	assert.Assert(t, entered(in))
+	assert.Assert(t, !entered(in)) // the third waits for a slot
+
+	// a request without a parsed body never waits for one
+	assert.Equal(t, get(h, jf, "203.0.113.4", "/x").Code, http.StatusOK)
+	assert.Equal(t, send(h, http.MethodPut, jf, "/f.bin", "application/octet-stream", strings.NewReader("raw bytes")).Code, http.StatusOK)
+
+	let <- struct{}{}
+	assert.Assert(t, entered(in)) // a slot freed: the third is inspected
+	close(let)
+	for i := 0; i < 3; i++ {
+		assert.Equal(t, <-codes, http.StatusOK)
+	}
+	assert.Equal(t, hits.Load(), int32(5))
+	assert.Equal(t, len(wafEvents(g)), 0)
+}
+
+func TestBodyInspectionsCappedPerKey(t *testing.T) {
+	_, h, hits, in, let := slowGuard(t)
+	codes := make(chan int, 2)
+	for i := 0; i < 2; i++ {
+		go func() { codes <- postForm(h, "2001:db8::1") }()
+	}
+	assert.Assert(t, entered(in))
+	assert.Assert(t, !entered(in)) // same /64 key: the second waits though the box has a slot
+	let <- struct{}{}
+	assert.Assert(t, entered(in))
+	close(let)
+	assert.Equal(t, <-codes, http.StatusOK)
+	assert.Equal(t, <-codes, http.StatusOK)
+	assert.Equal(t, hits.Load(), int32(2))
+}
+
+func TestBodyInspectionBusyIs503(t *testing.T) {
+	g, h, hits, in, let := slowGuard(t)
+	g.inspectWait = 100 * time.Millisecond // stands for the 2 s
+	first := make(chan int, 1)
+	go func() { first <- postForm(h, visitorIP) }()
+	assert.Assert(t, entered(in))
+
+	r := httptest.NewRequest(http.MethodPost, "http://"+jf+"/login", strings.NewReader("user=bob&remember=1"))
+	r.RemoteAddr = net.JoinHostPort(visitorIP, "4444")
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	assert.Equal(t, w.Code, http.StatusServiceUnavailable)
+	assert.Equal(t, w.Body.String(), "This app is not available right now.\n")
+	assert.Equal(t, hits.Load(), int32(0)) // not passed uninspected
+	ev := wafEvents(g)
+	assert.Equal(t, len(ev), 1)
+	assert.Equal(t, ev[0].Action, "blocked")
+	assert.Equal(t, ev[0].Detail, "inspection busy")
+	assert.Equal(t, ev[0].Rule, 0)
+
+	close(let)
+	assert.Equal(t, <-first, http.StatusOK)
+	assert.Equal(t, hits.Load(), int32(1))
+	g.cm.Lock()
+	assert.Equal(t, len(g.wafHits), 0) // no ban count
+	g.cm.Unlock()
 }
