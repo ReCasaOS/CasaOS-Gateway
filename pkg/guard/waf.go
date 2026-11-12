@@ -14,14 +14,13 @@ import (
 	"github.com/corazawaf/coraza/v3/types"
 )
 
-// wafHead is the contract's directives, plus, so that file shares work under "block": PUT among the
-// methods and application/octet-stream among the body types (uploads); 200002 not firing on a body
-// cut at the limit (a valid body cut short is not malformed); and 901340 removed, which made Coraza
-// read bodies without a parser as form fields, where binary data matches SQL and shell rules.
+// wafHead departs from stock CRS for shared apps: 64 KiB of body inspected (CPU), PUT PATCH DELETE + WebDAV allowed, 920420 off (any upload type), 9100001 for 200002 (a body cut at the limit is not malformed), 901340 off (binary is not form fields).
 const (
 	wafHead = `Include @coraza.conf-recommended
 SecRuleEngine On
-SecRequestBodyLimit 1048576
+SecRequestBodyLimit 65536
+SecRequestBodyNoFilesLimit 65536
+SecRequestBodyInMemoryLimit 65536
 SecRequestBodyLimitAction ProcessPartial
 SecResponseBodyAccess Off
 SecAuditEngine Off
@@ -29,7 +28,7 @@ SecRuleRemoveById 200002
 SecRule REQBODY_ERROR "!@eq 0" "id:9100001,phase:2,t:none,log,deny,status:400,msg:'Failed to parse request body.',severity:2,chain"
   SecRule INBOUND_DATA_ERROR "!@eq 1" "t:none"
 Include @crs-setup.conf.example
-SecAction "id:9100000,phase:1,pass,nolog,t:none,setvar:tx.blocking_paranoia_level=1,setvar:'tx.allowed_methods=GET HEAD POST OPTIONS PUT PROPFIND PROPPATCH MKCOL COPY MOVE LOCK UNLOCK REPORT',setvar:'tx.allowed_request_content_type=|application/x-www-form-urlencoded| |multipart/form-data| |text/xml| |application/xml| |application/soap+xml| |application/json| |application/octet-stream|'"
+SecAction "id:9100000,phase:1,pass,nolog,t:none,setvar:tx.blocking_paranoia_level=1,setvar:'tx.allowed_methods=GET HEAD POST OPTIONS PUT PATCH DELETE PROPFIND PROPPATCH MKCOL COPY MOVE LOCK UNLOCK REPORT'"
 `
 	hostRuleFirst = 9100100 // per-host rules: 9100100 to 9199999
 	hostRuleLast  = 9199999
@@ -70,11 +69,11 @@ func buildWAF(apps map[string]AppConfig) (coraza.WAF, error) {
 		}
 		d.WriteString("\"\n")
 	}
-	d.WriteString("Include @owasp_crs/*.conf\nSecRuleRemoveById 901340\n")
+	d.WriteString("Include @owasp_crs/*.conf\nSecRuleRemoveById 901340 920420\n")
 	return coraza.NewWAF(coraza.NewWAFConfig().WithRootFS(coreruleset.FS).WithDirectives(d.String()))
 }
 
-// wafFilter is the WAF hook (step 6). It inspects the request only (headers, then the first MiB of
+// wafFilter is the WAF hook (step 6). It inspects the request only (headers, then the first 64 KiB of
 // the body, which the app still receives whole); a request the CRS would interrupt is journaled,
 // and on "block" answered 403 and counted toward a ban.
 func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig) bool {

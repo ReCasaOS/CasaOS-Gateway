@@ -146,11 +146,44 @@ func TestWebDAVMethodsAllowed(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, string(body), propfind) // the app gets the body the WAF read
 
-	for i, m := range []string{"PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", "REPORT", "PUT"} {
+	for i, m := range []string{"PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", "REPORT", "PUT", "DELETE", "PATCH"} {
 		assert.Equal(t, send(h, m, nc, "/remote.php/dav/files/u/a", "", nil).Code, http.StatusOK, m)
 		assert.Equal(t, a.hits, i+2, m)
 	}
 	assert.Equal(t, len(wafEvents(g)), 0)
+}
+
+// Any upload type reaches the app whole under block (920420 is off; such bodies are not parsed).
+func TestUploadTypesAllowed(t *testing.T) {
+	cfg := wafConfig("block", nil)
+	g, _, a, h := setup(t, &cfg)
+	bin, _ := io.ReadAll(io.LimitReader(rand.NewChaCha8([32]byte{3}), 256<<10))
+	for _, c := range []struct{ ctype, body string }{
+		{"image/jpeg", string(bin)},
+		{"text/plain", strings.Repeat("hello world, notes from the trip. ", 8<<10)},
+	} {
+		w := send(h, http.MethodPut, nc, "/remote.php/dav/files/u/f", c.ctype, strings.NewReader(c.body))
+		assert.Equal(t, w.Code, http.StatusOK, c.ctype)
+		got, err := io.ReadAll(a.seen.Body)
+		assert.NilError(t, err)
+		assert.Assert(t, string(got) == c.body, c.ctype)
+	}
+	assert.Equal(t, len(wafEvents(g)), 0)
+}
+
+// An attack inside the inspected first 64 KiB of a 2 MiB body is caught, whatever the parser.
+func TestCutBodyStillInspected(t *testing.T) {
+	cfg := wafConfig("block", nil)
+	g, _, _, h := setup(t, &cfg)
+	pad := strings.Repeat(`{"name":"photo","size":12345},`, (2<<20)/30)
+	for _, c := range []struct{ ctype, body string }{
+		{"application/json", `{"q":"1' OR '1'='1","items":[` + pad + `{}]}`},
+		{"application/xml", `<a><q>1' OR '1'='1</q>` + strings.Repeat("<i>photo</i>", (2<<20)/12) + `</a>`},
+		{"application/x-www-form-urlencoded", "q=1'%20OR%20'1'='1&p=" + strings.Repeat("x", 2<<20)},
+	} {
+		assert.Equal(t, send(h, http.MethodPost, jf, "/api", c.ctype, strings.NewReader(c.body)).Code, http.StatusForbidden, c.ctype)
+		assert.Assert(t, wafEvents(g)[0].Rule/1000 == 942, "%s: rule %d", c.ctype, wafEvents(g)[0].Rule)
+	}
 }
 
 // sink is an app that hashes what it receives and notes the heap at the end of the body.
