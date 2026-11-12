@@ -35,6 +35,11 @@ func serveShare(runtimePath string, tlsCfg *tls.Config, h http.Handler) (*http.S
 		IdleTimeout:       2 * time.Minute, // the only listener facing strangers: an idle keep-alive would pin a tunnel stream
 	}
 
+	// HTTP/2 as well: over HTTP/1.1 a browser opens up to 6 connections per shared app, each one a
+	// stream of the box's relay tunnel. WebSockets still come over HTTP/1.1: no extended CONNECT is offered.
+	tlsCfg = tlsCfg.Clone()
+	tlsCfg.NextProtos = []string{"h2", "http/1.1"}
+
 	go func() {
 		err := server.Serve(tls.NewListener(proxyproto.Listen(ln, 5*time.Second), tlsCfg))
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
