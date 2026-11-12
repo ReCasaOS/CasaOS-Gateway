@@ -50,6 +50,7 @@ type counters struct {
 	rates       map[counterKey]*rateWin
 	rateStrikes map[counterKey]*hits
 	scans       map[counterKey]*hits
+	codes       map[counterKey]*hits
 	swept       time.Time
 }
 
@@ -76,7 +77,7 @@ func (c *counters) sweep(now time.Time) {
 			delete(c.rates, k)
 		}
 	}
-	for _, m := range []map[counterKey]*hits{c.rateStrikes, c.scans} {
+	for _, m := range []map[counterKey]*hits{c.rateStrikes, c.scans, c.codes} {
 		for k, h := range m {
 			if len(h.live(now)) == 0 {
 				delete(m, k)
@@ -86,18 +87,29 @@ func (c *counters) sweep(now time.Time) {
 }
 
 var visitorCopy = map[int][2]string{ // English, French
+	http.StatusUnauthorized:       {"Access code required.", "Code d'accès requis."},
 	http.StatusForbidden:          {"Access denied.", "Accès refusé."},
 	http.StatusTooManyRequests:    {"Too many requests. Try again later.", "Trop de requêtes. Réessayez plus tard."},
 	http.StatusServiceUnavailable: {"This app is not available right now.", "Cette app n'est pas disponible pour le moment."},
 }
 
+// lang is the visitor's language: 1 (French) when Accept-Language starts with fr, else 0 (English).
+func lang(r *http.Request) int {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Accept-Language"))), "fr") {
+		return 1
+	}
+	return 0
+}
+
 // deny answers code with a short text in the visitor's language.
 func deny(w http.ResponseWriter, r *http.Request, code int) {
-	lang := 0
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Accept-Language"))), "fr") {
-		lang = 1
-	}
-	http.Error(w, visitorCopy[code][lang], code)
+	http.Error(w, visitorCopy[code][lang(r)], code)
+}
+
+// remoteAddr is the visitor's address, IPv4-mapped IPv6 as IPv4.
+func remoteAddr(r *http.Request) netip.Addr {
+	ap, _ := netip.ParseAddrPort(r.RemoteAddr)
+	return ap.Addr().Unmap().WithZone("")
 }
 
 // NormalizeHost lowercases h, strips a port and a trailing dot. "" stays "". service.NormalizeHost uses it.
@@ -140,8 +152,7 @@ func (g *Guard) Handler(next http.Handler) http.Handler {
 			return
 		}
 		pol := app.Policy
-		ap, _ := netip.ParseAddrPort(r.RemoteAddr)
-		addr := ap.Addr().Unmap().WithZone("")
+		addr := remoteAddr(r)
 		if !cfg.Protection || listed(pol.Allow, addr) {
 			if g.gate == nil || !g.gate(w, r, app) {
 				next.ServeHTTP(w, r)

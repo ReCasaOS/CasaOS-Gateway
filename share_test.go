@@ -244,6 +244,76 @@ func TestShareListenerRefusesABlockedVisitor(t *testing.T) {
 	}
 }
 
+func TestShareWebSocketWithAccessCookie(t *testing.T) {
+	dir := t.TempDir()
+	def, err := common.SelfSigned(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSharePair(t, dir, "*.mybox.box.example.org")
+	picker, err := common.NewCertPicker(def, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := make(chan string, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookies <- r.Header.Get("Cookie")
+		conn, brw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+		brw.Flush()
+	}))
+	defer backend.Close()
+
+	mgmt := newShareManagement(t, dir)
+	if err := mgmt.SetHost(service.HostRoute{Host: shareHost, Target: backend.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if mgmt.Guard, err = guard.New(dir, dir, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	secret := make([]byte, 32)
+	ban := guard.BanRules{WAFHits: 10, WAFWindowS: 600, Scan404: 100, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}
+	if err := mgmt.Guard.SetConfig(guard.Config{
+		Secret: secret, Protection: true,
+		Apps: map[string]guard.AppConfig{shareHost: {App: "jellyfin", Access: "code",
+			Policy: guard.Policy{WAF: "off", Countries: guard.Countries{Mode: "none"}, RatePerMin: 600, Ban: ban}}},
+		People: []guard.Person{{ID: "p1", Gen: 1, CodeHash: guard.CodeHash(secret, "ABCD-EFGH-JKMN"), Apps: []string{"jellyfin"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := serveShare(dir, picker.Config(), route.NewGatewayRoute(mgmt).GetShareRoute())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	b, err := os.ReadFile(filepath.Join(dir, common.ShareAddrFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := strings.TrimSpace(string(b))
+
+	upgrade := "GET /socket HTTP/1.1\r\nHost: " + shareHost + "\r\nConnection: Upgrade, close\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+	resp := request(t, dialShare(t, addr, shareHost, "http/1.1"), upgrade+"\r\n")
+	if !strings.HasPrefix(resp, "HTTP/1.1 401") {
+		t.Fatalf("without a cookie: response = %q, want 401", resp)
+	}
+
+	token := guard.SignSession(secret, "p1", 1, time.Now())
+	resp = request(t, dialShare(t, addr, shareHost, "http/1.1"), upgrade+"Cookie: a=b; recasaos_access="+token+"\r\n\r\n")
+	if !strings.HasPrefix(resp, "HTTP/1.1 101") {
+		t.Fatalf("with a cookie: response = %q, want 101", resp)
+	}
+	if got := <-cookies; got != "a=b" {
+		t.Fatalf("backend saw Cookie %q, want a=b", got)
+	}
+}
+
 func TestPublicListenerIgnoresPROXY(t *testing.T) {
 	srv := httptest.NewServer(route.NewGatewayRoute(newShareManagement(t, t.TempDir())).GetRoute())
 	defer srv.Close()
