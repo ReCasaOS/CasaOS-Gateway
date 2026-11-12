@@ -18,12 +18,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 
 	"github.com/ReCasaOS/CasaOS-Gateway/common"
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 	"github.com/ReCasaOS/CasaOS-Gateway/pkg/proxyproto"
 	"github.com/ReCasaOS/CasaOS-Gateway/route"
 	"github.com/ReCasaOS/CasaOS-Gateway/service"
@@ -187,6 +189,58 @@ func TestShareListenerServesAVisitorThroughPROXYAndTLS(t *testing.T) {
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
 		t.Fatalf("handshake without a PROXY header hung until the deadline: %v", err)
+	}
+}
+
+func TestShareListenerRefusesABlockedVisitor(t *testing.T) {
+	dir := t.TempDir()
+	def, err := common.SelfSigned(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSharePair(t, dir, "*.mybox.box.example.org")
+	picker, err := common.NewCertPicker(def, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer backend.Close()
+
+	mgmt := newShareManagement(t, dir)
+	if err := mgmt.SetHost(service.HostRoute{Host: shareHost, Target: backend.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if mgmt.Guard, err = guard.New(dir, dir, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	ban := guard.BanRules{WAFHits: 10, WAFWindowS: 600, Scan404: 100, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}
+	if err := mgmt.Guard.SetConfig(guard.Config{Protection: true, Apps: map[string]guard.AppConfig{shareHost: {
+		App: "jellyfin", Access: "open",
+		Policy: guard.Policy{WAF: "off", Block: []string{visitor.IP.String()}, Countries: guard.Countries{Mode: "none"}, RatePerMin: 600, Ban: ban},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := serveShare(dir, picker.Config(), route.NewGatewayRoute(mgmt).GetShareRoute())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	b, err := os.ReadFile(filepath.Join(dir, common.ShareAddrFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp := request(t, dialShare(t, strings.TrimSpace(string(b)), shareHost), "GET /x HTTP/1.1\r\nHost: "+shareHost+"\r\nConnection: close\r\n\r\n")
+	if !strings.HasPrefix(resp, "HTTP/1.1 403") {
+		t.Fatalf("response = %q, want 403", resp)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("backend saw %d requests, want none", n)
+	}
+	if ev := mgmt.Guard.Events("jellyfin", "blocklist", 0); len(ev) != 1 || ev[0].IP != visitor.IP.String() {
+		t.Fatalf("events = %+v, want one blocklist event for the visitor", ev)
 	}
 }
 

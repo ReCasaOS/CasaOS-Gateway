@@ -74,13 +74,18 @@ func (g *GatewayRoute) serveHost(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// GetShareRoute serves host routes only; anything else is 404. No /ping, no path routes.
+// GetShareRoute serves host routes only; anything else is 404. No /ping, no path routes. The guard,
+// when there is one, filters every request first.
 func (g *GatewayRoute) GetShareRoute() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !g.serveHost(w, r) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
+	if g.management.Guard != nil {
+		h = g.management.Guard.Handler(h)
+	}
+	return h
 }
 
 func (g *GatewayRoute) GetRoute() *http.ServeMux {

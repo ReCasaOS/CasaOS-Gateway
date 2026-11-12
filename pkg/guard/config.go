@@ -183,6 +183,8 @@ type Guard struct {
 	now         func() time.Time
 
 	store
+	counters
+	country, waf, gate hook // filled by the country filter, the WAF and the access gate; nil passes
 
 	mu         sync.RWMutex
 	cfg        Config
@@ -194,6 +196,7 @@ type Guard struct {
 // the Gateway (it serves the dashboard too): the guard starts Broken and the error is logged.
 func New(runtimePath, dataPath string, now func() time.Time) (*Guard, error) {
 	g := &Guard{runtimePath: runtimePath, dataPath: dataPath, now: now}
+	g.rates, g.rateStrikes, g.scans = map[counterKey]*rateWin{}, map[counterKey]*hits{}, map[counterKey]*hits{}
 
 	c, err := load(filepath.Join(runtimePath, FileName))
 	switch {
