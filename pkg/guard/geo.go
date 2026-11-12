@@ -146,11 +146,7 @@ func (g *Guard) countryFilter(w http.ResponseWriter, r *http.Request, app AppCon
 	if in != (cs.Mode == "block") {
 		return false
 	}
-	path := r.URL.Path
-	if len(path) > pathMax {
-		path = path[:pathMax]
-	}
-	g.Record(Event{IP: ip, Key: key, App: app.App, Path: path, Reason: "country", Action: "blocked"})
+	g.Record(Event{IP: ip, Key: key, App: app.App, Path: eventPath(r), Reason: "country", Action: "blocked"})
 	deny(w, r, http.StatusForbidden)
 	return true
 }

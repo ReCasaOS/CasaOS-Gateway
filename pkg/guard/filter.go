@@ -51,6 +51,7 @@ type counters struct {
 	rateStrikes map[counterKey]*hits
 	scans       map[counterKey]*hits
 	codes       map[counterKey]*hits
+	wafHits     map[counterKey]*hits
 	swept       time.Time
 }
 
@@ -77,7 +78,7 @@ func (c *counters) sweep(now time.Time) {
 			delete(c.rates, k)
 		}
 	}
-	for _, m := range []map[counterKey]*hits{c.rateStrikes, c.scans, c.codes} {
+	for _, m := range []map[counterKey]*hits{c.rateStrikes, c.scans, c.codes, c.wafHits} {
 		for k, h := range m {
 			if len(h.live(now)) == 0 {
 				delete(m, k)
@@ -118,6 +119,14 @@ func NormalizeHost(h string) string {
 		h = hostOnly
 	}
 	return strings.TrimSuffix(strings.ToLower(h), ".")
+}
+
+// eventPath is the request path for the journal: no query, at most 200 bytes.
+func eventPath(r *http.Request) string {
+	if p := r.URL.Path; len(p) > pathMax {
+		return p[:pathMax]
+	}
+	return r.URL.Path
 }
 
 // shortcut: lists are parsed on every request (tens of ns an entry); parse them in SetConfig if lists reach thousands.
@@ -161,10 +170,7 @@ func (g *Guard) Handler(next http.Handler) http.Handler {
 		}
 
 		key, ip := Key(r.RemoteAddr)
-		path := r.URL.Path
-		if len(path) > pathMax {
-			path = path[:pathMax]
-		}
+		path := eventPath(r)
 		record := func(reason, action string) {
 			g.Record(Event{IP: ip, Key: key, App: app.App, Path: path, Reason: reason, Action: action})
 		}

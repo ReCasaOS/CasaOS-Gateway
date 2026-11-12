@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"github.com/corazawaf/coraza/v3"
 	"go.uber.org/zap"
 )
 
@@ -193,6 +194,7 @@ type Guard struct {
 
 	mu         sync.RWMutex
 	cfg        Config
+	crs        coraza.WAF // built from cfg; nil when every app has its WAF off
 	configured bool
 	broken     bool // guard.json exists but cannot be used: shared hosts must answer 503 until a SetConfig succeeds
 }
@@ -202,10 +204,14 @@ type Guard struct {
 func New(runtimePath, dataPath, geoPath string, now func() time.Time) (*Guard, error) {
 	g := &Guard{runtimePath: runtimePath, dataPath: dataPath, now: now, geo: openGeo(geoPath, now)}
 	g.country = g.countryFilter
-	g.rates, g.rateStrikes, g.scans, g.codes = map[counterKey]*rateWin{}, map[counterKey]*hits{}, map[counterKey]*hits{}, map[counterKey]*hits{}
+	g.rates, g.rateStrikes, g.scans, g.codes, g.wafHits = map[counterKey]*rateWin{}, map[counterKey]*hits{}, map[counterKey]*hits{}, map[counterKey]*hits{}, map[counterKey]*hits{}
+	g.waf = g.wafFilter
 	g.gate = g.accessGate
 
 	c, err := load(filepath.Join(runtimePath, FileName))
+	if err == nil {
+		g.crs, err = buildWAF(c.Apps)
+	}
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
@@ -249,13 +255,17 @@ func (g *Guard) SetConfig(c Config) error {
 	if err != nil {
 		return err
 	}
+	crs, err := buildWAF(c.Apps) // slow (the whole CRS): outside the lock
+	if err != nil {
+		return err
+	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err := writeFileAtomic(filepath.Join(g.runtimePath, FileName), raw); err != nil {
 		return err
 	}
-	g.cfg, g.configured, g.broken = c, true, false
+	g.cfg, g.crs, g.configured, g.broken = c, crs, true, false
 	return nil
 }
 
