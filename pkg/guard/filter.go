@@ -88,10 +88,11 @@ func (c *counters) sweep(now time.Time) {
 }
 
 var visitorCopy = map[int][2]string{ // English, French
-	http.StatusUnauthorized:       {"Access code required.", "Code d'accès requis."},
-	http.StatusForbidden:          {"Access denied.", "Accès refusé."},
-	http.StatusTooManyRequests:    {"Too many requests. Try again later.", "Trop de requêtes. Réessayez plus tard."},
-	http.StatusServiceUnavailable: {"This app is not available right now.", "Cette app n'est pas disponible pour le moment."},
+	http.StatusUnauthorized:                {"Access code required.", "Code d'accès requis."},
+	http.StatusForbidden:                   {"Access denied.", "Accès refusé."},
+	http.StatusTooManyRequests:             {"Too many requests. Try again later.", "Trop de requêtes. Réessayez plus tard."},
+	http.StatusRequestHeaderFieldsTooLarge: {"Request too large.", "Requête trop grande."},
+	http.StatusServiceUnavailable:          {"This app is not available right now.", "Cette app n'est pas disponible pour le moment."},
 }
 
 // lang is the visitor's language: 1 (French) when Accept-Language starts with fr, else 0 (English).

@@ -62,6 +62,16 @@ func TestConfigValidate(t *testing.T) {
 		{"countries list", func(c *Config) { a := c.Apps[host]; a.Policy.Countries.List = []string{"fr"}; c.Apps[host] = a }, ".policy.countries.list[0]"},
 		{"allow", func(c *Config) { a := c.Apps[host]; a.Policy.Allow = []string{"300.1.1.1"}; c.Apps[host] = a }, ".policy.allow[0]: not an IP or CIDR"},
 		{"block", func(c *Config) { a := c.Apps[host]; a.Policy.Block = []string{"ok", "1.2.3.4"}; c.Apps[host] = a }, ".policy.block[0]: not an IP or CIDR"},
+		{"allow mapped range", func(c *Config) {
+			a := c.Apps[host]
+			a.Policy.Allow = []string{"::ffff:192.0.2.0/120"}
+			c.Apps[host] = a
+		}, ".policy.allow[0]"},
+		{"block mapped range", func(c *Config) {
+			a := c.Apps[host]
+			a.Policy.Block = []string{"::ffff:198.51.100.0/120"}
+			c.Apps[host] = a
+		}, ".policy.block[0]"},
 		{"rate", func(c *Config) { a := c.Apps[host]; a.Policy.RatePerMin = 0; c.Apps[host] = a }, ".policy.rate_per_min"},
 		{"ban", func(c *Config) { a := c.Apps[host]; a.Policy.Ban.CodeFails = 0; c.Apps[host] = a }, ".policy.ban.code_fails"},
 		{"secret", func(c *Config) { c.Secret = c.Secret[:16] }, "secret"},
@@ -83,6 +93,13 @@ func TestConfigValidate(t *testing.T) {
 				t.Fatalf("want an error naming %q, got %v", tc.field, err)
 			}
 		})
+	}
+	mapped := example(t) // a single IPv4-mapped address matches the IPv4 visitor
+	a := mapped.Apps[host]
+	a.Policy.Block = []string{"::ffff:198.51.100.7"}
+	mapped.Apps[host] = a
+	if err := mapped.Validate(); err != nil {
+		t.Fatalf("an IPv4-mapped address must validate: %v", err)
 	}
 	long := example(t)
 	long.People[0].ID = "Az09_-" + strings.Repeat("x", 58)

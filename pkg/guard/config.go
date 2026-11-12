@@ -78,8 +78,8 @@ var (
 )
 
 func validIPOrCIDR(s string) bool {
-	if _, err := netip.ParsePrefix(s); err == nil {
-		return true
+	if p, err := netip.ParsePrefix(s); err == nil {
+		return !p.Addr().Is4In6() // the visitor's address is unmapped: such a range would never match
 	}
 	_, err := netip.ParseAddr(s)
 	return err == nil
@@ -129,12 +129,12 @@ func (a AppConfig) validate(p string) error {
 	}
 	for i, s := range pol.Allow {
 		if !validIPOrCIDR(s) {
-			return invalid("%s.allow[%d]: not an IP or CIDR", p, i)
+			return invalid("%s.allow[%d]: not an IP or CIDR (an IPv4 range is written in IPv4)", p, i)
 		}
 	}
 	for i, s := range pol.Block {
 		if !validIPOrCIDR(s) {
-			return invalid("%s.block[%d]: not an IP or CIDR", p, i)
+			return invalid("%s.block[%d]: not an IP or CIDR (an IPv4 range is written in IPv4)", p, i)
 		}
 	}
 	if m := pol.Countries.Mode; m != "none" && m != "block" && m != "allow" {
@@ -191,10 +191,13 @@ type Guard struct {
 	counters
 	country, waf, gate hook // filled by the country filter, the WAF and the access gate; nil passes
 	geo                *Geo
-	slots              *slots        // body inspections running
+	slots              *slots        // costly inspections running
 	inspectWait        time.Duration // longest wait for a slot
 	inspecting         func()        // test hook, run while a body inspection holds its slot
+	built              func()        // test hook, run when SetConfig has built its WAF
 
+	setMu      sync.Mutex // one SetConfig at a time, from its build to its swap
+	rules      string     // the directives crs was built from; under setMu
 	mu         sync.RWMutex
 	cfg        Config
 	crs        coraza.WAF // built from cfg; nil when every app has its WAF off
@@ -212,8 +215,8 @@ func New(runtimePath, dataPath, geoPath string, now func() time.Time) (*Guard, e
 	g.gate = g.accessGate
 
 	c, err := load(filepath.Join(runtimePath, FileName))
-	if err == nil && c.Protection { // with protection off the WAF never runs
-		g.crs, err = buildWAF(c.Apps)
+	if err == nil {
+		g.crs, g.rules, err = g.compile(c)
 	}
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -258,11 +261,14 @@ func (g *Guard) SetConfig(c Config) error {
 	if err != nil {
 		return err
 	}
-	var crs coraza.WAF
-	if c.Protection { // with protection off the WAF never runs
-		if crs, err = buildWAF(c.Apps); err != nil { // slow (the whole CRS): outside the lock
-			return err
-		}
+	g.setMu.Lock() // a call that starts while another runs swaps after it
+	defer g.setMu.Unlock()
+	crs, rules, err := g.compile(c) // slow when the rules changed (the whole CRS): outside mu
+	if err != nil {
+		return err
+	}
+	if g.built != nil {
+		g.built()
 	}
 
 	g.mu.Lock()
@@ -270,8 +276,28 @@ func (g *Guard) SetConfig(c Config) error {
 	if err := writeFileAtomic(filepath.Join(g.runtimePath, FileName), raw); err != nil {
 		return err
 	}
-	g.cfg, g.crs, g.configured, g.broken = c, crs, true, false
+	g.cfg, g.crs, g.rules, g.configured, g.broken = c, crs, rules, true, false
 	return nil
+}
+
+// compile returns the WAF for c and the rules it is built from: the one held when they did not change
+// (a push of people, or of a mode), none with protection off (the WAF never runs). Under setMu.
+func (g *Guard) compile(c Config) (coraza.WAF, string, error) {
+	if !c.Protection {
+		return nil, "", nil
+	}
+	rules, err := wafRules(c.Apps)
+	if err != nil {
+		return nil, "", err
+	}
+	if rules == g.rules {
+		return g.crs, rules, nil
+	}
+	crs, err := newWAF(rules)
+	if err != nil {
+		return nil, "", err
+	}
+	return crs, rules, nil
 }
 
 // shortcut: no fsync before the rename, a power cut can leave an empty file (guard-state.json then loads as corrupt and drops the bans); add Sync if that matters.

@@ -34,7 +34,10 @@ Include @crs-setup.conf.example
 SecAction "id:9100000,phase:1,pass,nolog,t:none,setvar:tx.blocking_paranoia_level=1,setvar:'tx.allowed_methods=GET HEAD POST OPTIONS PUT PATCH DELETE PROPFIND PROPPATCH MKCOL COPY MOVE LOCK UNLOCK REPORT'"
 `
 	wafBodyLimit  = 64 << 10 // bytes of a body inspected
-	inspectSlots  = 2        // body inspections at once for the whole box; 1 per key
+	headMax       = 16 << 10 // bytes of URI and headers inspected; a larger head is not
+	headFree      = 4 << 10  // a head above this costs CPU like a body: it takes a slot
+	partsMax      = 100      // cookie pairs, and query args, inspected
+	inspectSlots  = 2        // inspections at once for the whole box; 1 per key
 	inspectWait   = 2 * time.Second
 	hostRuleFirst = 9100100 // per-host rules: 9100100 to 9199999
 	hostRuleLast  = 9199999
@@ -44,10 +47,10 @@ SecAction "id:9100000,phase:1,pass,nolog,t:none,setvar:tx.blocking_paranoia_leve
 // hostChars keeps a host from breaking the directive it goes in; Validate only checks it is normalised.
 var hostChars = regexp.MustCompile(`^[a-z0-9._-]+$`)
 
-// buildWAF compiles one WAF for every host: the CRS, then one phase-1 rule per host with rules_off
-// that removes them for that host's transactions. nil when no app has its WAF on (no CRS loaded).
-// The mode (observe or block) is applied in Go on the interruption, see wafFilter.
-func buildWAF(apps map[string]AppConfig) (coraza.WAF, error) {
+// wafRules are the directives of one WAF for every host: the CRS, then one phase-1 rule per host
+// with rules_off that removes them for that host's transactions. "" when no app has its WAF on (no
+// CRS loaded). The mode (observe or block) is applied in Go on the interruption, see wafFilter.
+func wafRules(apps map[string]AppConfig) (string, error) {
 	var hosts []string
 	for h, a := range apps {
 		if a.Policy.WAF != "off" {
@@ -55,7 +58,7 @@ func buildWAF(apps map[string]AppConfig) (coraza.WAF, error) {
 		}
 	}
 	if len(hosts) == 0 {
-		return nil, nil
+		return "", nil
 	}
 	sort.Strings(hosts) // stable rule ids
 	var d strings.Builder
@@ -67,7 +70,7 @@ func buildWAF(apps map[string]AppConfig) (coraza.WAF, error) {
 		}
 		id := hostRuleFirst + i
 		if !hostChars.MatchString(h) || id > hostRuleLast {
-			return nil, invalid("apps[%q]: not a host name the WAF can match", h)
+			return "", invalid("apps[%q]: not a host name the WAF can match", h)
 		}
 		fmt.Fprintf(&d, `SecRule REQUEST_HEADERS:Host "@streq %s" "id:%d,phase:1,pass,nolog,t:none`, h, id)
 		for _, r := range off {
@@ -76,13 +79,40 @@ func buildWAF(apps map[string]AppConfig) (coraza.WAF, error) {
 		d.WriteString("\"\n")
 	}
 	d.WriteString("Include @owasp_crs/*.conf\nSecRuleRemoveById 901340 920420\n")
-	return coraza.NewWAF(coraza.NewWAFConfig().WithRootFS(coreruleset.FS).WithDirectives(d.String()))
+	return d.String(), nil
+}
+
+// newWAF compiles rules (slow: the whole CRS); nil for "".
+func newWAF(rules string) (coraza.WAF, error) {
+	if rules == "" {
+		return nil, nil
+	}
+	return coraza.NewWAF(coraza.NewWAFConfig().WithRootFS(coreruleset.FS).WithDirectives(rules))
+}
+
+// headSize is what the CRS would read of r's head: bytes of URI and headers, cookie pairs and query args.
+func headSize(r *http.Request) (size, cookies, args int) {
+	size = len(r.URL.RequestURI())
+	for k, vs := range r.Header {
+		for _, v := range vs {
+			size += len(k) + len(v)
+			if k == "Cookie" {
+				cookies += strings.Count(v, ";") + 1
+			}
+		}
+	}
+	if q := r.URL.RawQuery; q != "" {
+		args = strings.Count(q, "&") + 1
+	}
+	return size, cookies, args
 }
 
 // wafFilter is the WAF hook (step 6). It inspects the request only (headers, then the first 64 KiB of
 // a body Coraza parses, which the app still receives whole); a request the CRS would interrupt is
-// journaled, and on "block" answered 403 and counted toward a ban. Body inspections are capped (see
-// slots): one that gets no slot within 2 s is answered 503 on "block" and passes on "observe".
+// journaled, and on "block" answered 403 and counted toward a ban. A head over 16 KiB, 100 cookies or
+// 100 query args is not inspected: 431 on "block", passed on "observe". Inspections of bodies and of
+// heads over 4 KiB are capped (see slots): one that gets no slot within 2 s is answered 503 on
+// "block" and passes on "observe".
 func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig) bool {
 	mode := app.Policy.WAF
 	if mode == "off" || (app.Access == "code" && r.URL.Path == EntryPath) { // the gate's own form
@@ -96,6 +126,10 @@ func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig)
 	}
 
 	key, ip := Key(r.RemoteAddr)
+	head, cookies, args := headSize(r)
+	if head > headMax || cookies > partsMax || args > partsMax {
+		return g.unchecked(w, r, app, "request too large to inspect", http.StatusRequestHeaderFieldsTooLarge)
+	}
 	tx := waf.NewTransaction()
 	defer tx.Close()
 	tx.ProcessConnection(ip, 0, "", 0)
@@ -112,7 +146,15 @@ func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig)
 	for _, te := range r.TransferEncoding {            // removed by net/http; rules about smuggling read it
 		tx.AddRequestHeader("Transfer-Encoding", te)
 	}
-	if tx.ProcessRequestHeaders() == nil {
+	var it *types.Interruption
+	if head <= headFree {
+		it = tx.ProcessRequestHeaders()
+	} else if release, ok := g.slots.take(key, g.inspectWait); ok {
+		func() { defer release(); it = tx.ProcessRequestHeaders() }() // given back before the body takes it again
+	} else {
+		return g.unchecked(w, r, app, "inspection busy", http.StatusServiceUnavailable)
+	}
+	if it == nil {
 		var err error
 		// Only a body Coraza parses (form, multipart, JSON, XML) is worth reading: the others reach no rule.
 		parsed := tx.(plugintypes.TransactionState).Variables().RequestBodyProcessor().Get() != ""
@@ -144,8 +186,7 @@ func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig)
 			return g.unchecked(w, r, app, "inspection error", http.StatusForbidden)
 		}
 	}
-	it := tx.Interruption()
-	if it == nil {
+	if it = tx.Interruption(); it == nil {
 		return false
 	}
 
@@ -189,7 +230,7 @@ func (g *Guard) unchecked(w http.ResponseWriter, r *http.Request, app AppConfig,
 	return true
 }
 
-// slots caps the body inspections running at once (CPU): inspectSlots for the box, one per key.
+// slots caps the costly inspections running at once (CPU): inspectSlots for the box, one per key.
 type slots struct {
 	box    chan struct{}
 	mu     sync.Mutex

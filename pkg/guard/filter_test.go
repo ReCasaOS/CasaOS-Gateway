@@ -169,7 +169,7 @@ func TestBlocklistAndAllowlist(t *testing.T) {
 
 func TestRateLimitThenBan(t *testing.T) {
 	cfg := protectedConfig(nil)
-	g, c, _, h := setup(t, &cfg)
+	g, c, a, h := setup(t, &cfg)
 	ip := "203.0.113.9"
 
 	for minute := 0; minute < 3; minute++ {
@@ -179,6 +179,7 @@ func TestRateLimitThenBan(t *testing.T) {
 		if minute == 0 {
 			c.add(20500 * time.Millisecond)
 		}
+		reached := a.hits
 		w := do(h, jf, ip)
 		assert.Equal(t, w.Code, http.StatusTooManyRequests)
 		assert.Equal(t, w.Body.String(), "Too many requests. Try again later.\n")
@@ -188,6 +189,7 @@ func TestRateLimitThenBan(t *testing.T) {
 			assert.Equal(t, do(h, jf, ip).Code, http.StatusTooManyRequests)
 			assert.Equal(t, do(h, jf, ip).Code, http.StatusTooManyRequests)
 		}
+		assert.Equal(t, a.hits, reached, "minute %d: a refused request reached the app", minute)
 		_, banned := g.Banned(ip)
 		assert.Equal(t, banned, minute == 2, "minute %d", minute)
 		c.add(61 * time.Second)

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -51,9 +52,9 @@ func send(h http.Handler, method, host, path, ctype string, body io.Reader) *htt
 func wafEvents(g *Guard) []Event { return g.Events("", "waf", 0) }
 
 func TestNoWAFWhenAllOff(t *testing.T) {
-	w, err := buildWAF(protectedConfig(nil).Apps)
+	rules, err := wafRules(protectedConfig(nil).Apps)
 	assert.NilError(t, err)
-	assert.Assert(t, w == nil)
+	assert.Equal(t, rules, "")
 }
 
 // The WAF is rebuilt from guard.json at start, and not built at all with protection off.
@@ -360,7 +361,7 @@ func TestRuleMsgHasNoRequestData(t *testing.T) {
 func TestHostileHostRefused(t *testing.T) {
 	cfg := wafConfig("block", func(p *Policy) { p.RulesOff = []int{942100} })
 	cfg.Apps[`evil" "id:1,phase:1,pass,ctl:ruleengine=off`] = cfg.Apps[jf]
-	_, err := buildWAF(cfg.Apps)
+	_, err := wafRules(cfg.Apps)
 	assert.Assert(t, errors.Is(err, ErrInvalid), "%v", err)
 }
 
@@ -615,4 +616,184 @@ func TestSetConfigDuringRequests(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// A head too large to inspect is refused at once under block, with one event and no ban count.
+func TestHeadTooLargeRefused(t *testing.T) {
+	pairs := func(n int, sep string) string {
+		p := make([]string, n)
+		for i := range p {
+			p[i] = fmt.Sprintf("c%d=1", i)
+		}
+		return strings.Join(p, sep)
+	}
+	for _, c := range []struct {
+		name, path string
+		hdr        []string
+	}{
+		{"256 KiB cookie", "/x", []string{"Cookie", "big=" + strings.Repeat("a", 256<<10)}},
+		{"101 cookies", "/x", []string{"Cookie", pairs(101, "; ")}},
+		{"101 query args", "/x?" + pairs(101, "&"), nil},
+	} {
+		cfg := wafConfig("block", nil)
+		g, _, a, h := setup(t, &cfg)
+		start := time.Now()
+		w := get(h, jf, visitorIP, c.path, c.hdr...)
+		took := time.Since(start)
+		assert.Equal(t, w.Code, http.StatusRequestHeaderFieldsTooLarge, c.name)
+		assert.Equal(t, w.Body.String(), "Request too large.\n", c.name)
+		assert.Assert(t, took < time.Second, "%s: took %v", c.name, took)
+		assert.Equal(t, a.hits, 0, c.name)
+		ev := wafEvents(g)
+		assert.Equal(t, len(ev), 1, c.name)
+		assert.Equal(t, ev[0].Action, "blocked", c.name)
+		assert.Equal(t, ev[0].Detail, "request too large to inspect", c.name)
+		assert.Equal(t, len(g.wafHits), 0, c.name)
+	}
+
+	// at the limits: inspected as usual
+	cfg := wafConfig("block", nil)
+	g, _, a, h := setup(t, &cfg)
+	assert.Equal(t, get(h, jf, visitorIP, "/x?"+pairs(100, "&"), "Cookie", pairs(100, "; ")).Code, http.StatusOK)
+	assert.Equal(t, a.hits, 1)
+	assert.Equal(t, len(wafEvents(g)), 0)
+}
+
+// Under observe a head too large to inspect passes, with one event.
+func TestHeadTooLargeObserved(t *testing.T) {
+	cfg := wafConfig("observe", nil)
+	g, _, a, h := setup(t, &cfg)
+	assert.Equal(t, get(h, jf, visitorIP, "/x", "X-Pad", strings.Repeat("a", 20<<10)).Code, http.StatusOK)
+	assert.Equal(t, a.hits, 1)
+	ev := wafEvents(g)
+	assert.Equal(t, len(ev), 1)
+	assert.Equal(t, ev[0].Action, "observed")
+	assert.Equal(t, ev[0].Detail, "request too large to inspect")
+}
+
+// A head over 4 KiB is inspected in a slot, like a body, and gives it back before its own body takes one.
+func TestBigHeadTakesASlot(t *testing.T) {
+	g, h, hits, in, queued, let := slowGuard(t, "block")
+	codes := make(chan int, 2)
+	for _, ip := range []string{"203.0.113.1", "203.0.113.2"} {
+		go func() { codes <- postForm(h, ip) }()
+	}
+	<-in
+	<-in
+	<-queued
+	<-queued
+
+	pad := strings.Repeat("a", 5<<10)
+	done := make(chan int, 1)
+	go func() { done <- get(h, jf, "203.0.113.3", "/x", "X-Pad", pad).Code }()
+	select {
+	case <-queued:
+	case <-time.After(time.Second):
+		t.Fatal("a 5 KiB head did not wait for a slot")
+	}
+	select {
+	case code := <-done:
+		t.Fatalf("answered %d while both slots were held", code)
+	default:
+	}
+	close(let)
+	assert.Equal(t, <-done, http.StatusOK)
+	assert.Equal(t, <-codes, http.StatusOK)
+	assert.Equal(t, <-codes, http.StatusOK)
+
+	g.inspecting, g.inspectWait = nil, 100*time.Millisecond
+	r := httptest.NewRequest(http.MethodPost, "http://"+jf+"/login", strings.NewReader("user=bob&remember=1"))
+	r.RemoteAddr = net.JoinHostPort(visitorIP, "4444")
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("X-Pad", pad)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	assert.Equal(t, w.Code, http.StatusOK)
+	assert.Equal(t, hits.Load(), int32(4))
+	assert.Equal(t, len(wafEvents(g)), 0)
+}
+
+// A chunked multipart upload (no Content-Length) past the inspection limit reaches the app whole under block.
+func TestChunkedMultipartUploadPasses(t *testing.T) {
+	g := newTestGuard(t, t.TempDir(), startClock())
+	assert.NilError(t, g.SetConfig(wafConfig("block", nil)))
+	app := &sink{}
+	srv := httptest.NewServer(g.Handler(app))
+	defer srv.Close()
+
+	file, _ := io.ReadAll(io.LimitReader(rand.NewChaCha8([32]byte{5}), 300<<10))
+	ctype, body, _ := multipartFile(bytes.NewReader(file))
+	want, _ := io.ReadAll(body)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/upload", io.MultiReader(bytes.NewReader(want))) // unknown length: sent chunked
+	assert.NilError(t, err)
+	req.Host = jf
+	req.Header.Set("Content-Type", ctype)
+	resp, err := srv.Client().Do(req)
+	assert.NilError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, resp.StatusCode, http.StatusOK)
+	assert.Equal(t, app.n, int64(len(want)))
+	sum := sha256.Sum256(want)
+	assert.DeepEqual(t, app.sum, sum[:])
+	assert.Equal(t, len(wafEvents(g)), 0)
+}
+
+// A push that changes only people, or only the mode, keeps the compiled WAF; a rule change rebuilds it.
+func TestWAFReusedWhenRulesUnchanged(t *testing.T) {
+	g := newTestGuard(t, t.TempDir(), startClock())
+	cfg := wafConfig("block", nil)
+	assert.NilError(t, g.SetConfig(cfg))
+	first := g.crs
+	assert.Assert(t, first != nil)
+
+	cfg.Secret = testSecret
+	cfg.People = []Person{{ID: "p9", Gen: 1, CodeHash: CodeHash(testSecret, goodCode), Apps: []string{"jellyfin"}}}
+	assert.NilError(t, g.SetConfig(cfg))
+	assert.Assert(t, g.crs == first)
+	assert.NilError(t, g.SetConfig(wafConfig("observe", nil)))
+	assert.Assert(t, g.crs == first)
+
+	assert.NilError(t, g.SetConfig(wafConfig("block", func(p *Policy) { p.RulesOff = []int{942100} })))
+	assert.Assert(t, g.crs != first)
+	assert.Assert(t, g.crs != nil)
+}
+
+// A SetConfig that starts while another is between its build and its swap ends last: its config is held and written.
+func TestSetConfigSerialised(t *testing.T) {
+	rt := t.TempDir()
+	g, err := New(rt, t.TempDir(), "", startClock().now)
+	assert.NilError(t, err)
+	first := wafConfig("block", nil)
+	second := wafConfig("block", nil)
+	second.Protection = false
+
+	paused, resume := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	g.built = func() {
+		if calls.Add(1) == 1 {
+			close(paused)
+			<-resume
+		}
+	}
+	errs := make(chan error, 2)
+	go func() { errs <- g.SetConfig(first) }()
+	<-paused
+	go func() { errs <- g.SetConfig(second) }()
+	left := 2
+	select {
+	case err := <-errs: // the second finished while the first was paused
+		assert.NilError(t, err)
+		left--
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(resume)
+	for ; left > 0; left-- {
+		assert.NilError(t, <-errs)
+	}
+
+	assert.Equal(t, g.Config().Protection, false)
+	assert.Assert(t, g.crs == nil)
+	disk, err := load(filepath.Join(rt, FileName))
+	assert.NilError(t, err)
+	assert.Equal(t, disk.Protection, false)
 }
