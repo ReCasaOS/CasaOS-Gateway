@@ -8,8 +8,10 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/model"
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 	"github.com/ReCasaOS/CasaOS-Gateway/service"
 	"gotest.tools/v3/assert"
 )
@@ -190,4 +192,39 @@ func TestWebSocketPassesThroughHostRoute(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, line, "hi\n")
 	assert.DeepEqual(t, env.app.list(), []string{"/ws"})
+}
+
+// Only the app's own 404s count toward a scan ban, not the Gateway's for a host it does not serve.
+func TestShareScanCountsOnlyTheAppsAnswers(t *testing.T) {
+	const ghost = "ghost.mybox.box.example.org" // in the guard config, not in the host table
+	app := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(app.Close)
+	state := service.NewState()
+	assert.NilError(t, state.SetRuntimePath(t.TempDir()))
+	management := service.NewManagementService(state)
+	assert.NilError(t, management.SetHost(service.HostRoute{Host: appHost, Target: app.URL}))
+	var err error
+	management.Guard, err = guard.New(t.TempDir(), t.TempDir(), time.Now)
+	assert.NilError(t, err)
+	pol := guard.Policy{WAF: "off", Countries: guard.Countries{Mode: "none"}, RatePerMin: 600, Ban: guard.BanRules{
+		WAFHits: 10, WAFWindowS: 600, Scan404: 3, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}}
+	assert.NilError(t, management.Guard.SetConfig(guard.Config{Protection: true, Apps: map[string]guard.AppConfig{
+		ghost:   {App: "ghost", Access: "open", Policy: pol},
+		appHost: {App: "jellyfin", Access: "open", Policy: pol},
+	}}))
+	share := httptest.NewServer(NewGatewayRoute(management).GetShareRoute())
+	t.Cleanup(share.Close)
+
+	for i := 0; i < 5; i++ {
+		code, _ := get(t, share.URL, ghost, "/x")
+		assert.Equal(t, code, http.StatusNotFound)
+	}
+	_, banned := management.Guard.Banned("127.0.0.1")
+	assert.Assert(t, !banned)
+
+	for i := 0; i < 3; i++ {
+		get(t, share.URL, appHost, "/x")
+	}
+	_, banned = management.Guard.Banned("127.0.0.1")
+	assert.Assert(t, banned)
 }

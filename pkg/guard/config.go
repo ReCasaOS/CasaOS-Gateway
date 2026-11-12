@@ -93,6 +93,9 @@ func (c Config) Validate() error {
 		return invalid("secret: %d bytes, want 32", n)
 	}
 	for host, a := range c.Apps {
+		if NormalizeHost(host) != host { // the lookup is by normalised host: any other key would leave its app unfiltered
+			return invalid("apps[%q]: not a normalised host (lowercase, no port, no trailing dot)", host)
+		}
 		if err := a.validate(fmt.Sprintf("apps[%q]", host)); err != nil {
 			return err
 		}

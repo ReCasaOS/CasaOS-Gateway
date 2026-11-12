@@ -67,6 +67,8 @@ func TestConfigValidate(t *testing.T) {
 		{"secret", func(c *Config) { c.Secret = c.Secret[:16] }, "secret"},
 		{"code hash", func(c *Config) { c.People[0].CodeHash = "abc" }, "people[0].code_hash"},
 		{"person id", func(c *Config) { c.People[0].ID = "" }, "people[0].id"},
+		{"host case", func(c *Config) { c.Apps["Jellyfin.mybox.box.recasaos.org"] = c.Apps[host]; delete(c.Apps, host) }, `apps["Jellyfin.mybox.box.recasaos.org"]: not a normalised host`},
+		{"host dot", func(c *Config) { c.Apps[host+"."] = c.Apps[host]; delete(c.Apps, host) }, `apps["` + host + `."]: not a normalised host`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

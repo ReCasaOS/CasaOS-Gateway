@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 	"github.com/ReCasaOS/CasaOS-Gateway/service"
 	"go.uber.org/zap"
 )
@@ -79,6 +80,7 @@ func (g *GatewayRoute) serveHost(w http.ResponseWriter, r *http.Request) bool {
 func (g *GatewayRoute) GetShareRoute() http.Handler {
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !g.serveHost(w, r) {
+			guard.NotFromApp(w)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})

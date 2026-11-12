@@ -214,7 +214,7 @@ func (g *Guard) Handler(next http.Handler) http.Handler {
 
 		sw := &statusWriter{ResponseWriter: w}
 		next.ServeHTTP(sw, r)
-		if sw.status != http.StatusNotFound {
+		if sw.status != http.StatusNotFound || sw.notByApp {
 			return
 		}
 		g.cm.Lock()
@@ -235,7 +235,16 @@ func (g *Guard) Handler(next http.Handler) http.Handler {
 // underlying writer cannot (HTTP/2).
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status   int
+	notByApp bool
+}
+
+// NotFromApp marks the answer on w as the Gateway's own (a host it does not serve), so its 404 is
+// not counted toward a scan ban.
+func NotFromApp(w http.ResponseWriter) {
+	if s, ok := w.(*statusWriter); ok {
+		s.notByApp = true
+	}
 }
 
 func (s *statusWriter) WriteHeader(code int) {
