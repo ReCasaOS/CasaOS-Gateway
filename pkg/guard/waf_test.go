@@ -797,3 +797,26 @@ func TestSetConfigSerialised(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, disk.Protection, false)
 }
+
+// A GET with a head over 4 KiB holds its slot through the whole inspection: the CRS reads cookies and args in phase 2.
+func TestBigHeadHeldThroughInspection(t *testing.T) {
+	_, h, hits, in, queued, let := slowGuard(t, "block")
+	pad := strings.Repeat("a", 5<<10)
+	codes := make(chan int, 2)
+	go func() { codes <- get(h, jf, visitorIP, "/x", "X-Pad", pad).Code }()
+	select {
+	case <-in:
+	case <-time.After(time.Second):
+		t.Fatal("a 5 KiB head was not inspected inside its slot")
+	}
+	go func() { codes <- get(h, jf, visitorIP, "/y", "X-Pad", pad).Code }()
+	<-queued
+	<-queued
+	notIn(t, in) // same key: the second waits for the first's slot
+	let <- struct{}{}
+	<-in
+	close(let)
+	assert.Equal(t, <-codes, http.StatusOK)
+	assert.Equal(t, <-codes, http.StatusOK)
+	assert.Equal(t, hits.Load(), int32(2))
+}

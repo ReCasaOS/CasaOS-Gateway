@@ -146,20 +146,30 @@ func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig)
 	for _, te := range r.TransferEncoding {            // removed by net/http; rules about smuggling read it
 		tx.AddRequestHeader("Transfer-Encoding", te)
 	}
-	var it *types.Interruption
-	if head <= headFree {
-		it = tx.ProcessRequestHeaders()
-	} else if release, ok := g.slots.take(key, g.inspectWait); ok {
-		func() { defer release(); it = tx.ProcessRequestHeaders() }() // given back before the body takes it again
-	} else {
+	var held func() // the slot this inspection holds; given back on return, a panic included
+	defer func() {
+		if held != nil {
+			held()
+		}
+	}()
+	take := func() (ok bool) {
+		held, ok = g.slots.take(key, g.inspectWait)
+		return ok
+	}
+	// A head over 4 KiB costs CPU like a body: the CRS reads its cookies and args in phase 2.
+	if head > headFree && !take() {
 		return g.unchecked(w, r, app, "inspection busy", http.StatusServiceUnavailable)
 	}
-	if it == nil {
+	if tx.ProcessRequestHeaders() == nil {
 		var err error
 		// Only a body Coraza parses (form, multipart, JSON, XML) is worth reading: the others reach no rule.
 		parsed := tx.(plugintypes.TransactionState).Variables().RequestBodyProcessor().Get() != ""
 		if parsed && r.Body != nil && r.Body != http.NoBody {
-			// read before taking a slot, so a slow client cannot hold one
+			// read without a slot, so a slow client cannot hold one
+			if held != nil {
+				held()
+				held = nil
+			}
 			var seen []byte
 			seen, err = io.ReadAll(io.LimitReader(r.Body, wafBodyLimit))
 			r.Body = struct {
@@ -167,11 +177,9 @@ func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig)
 				io.Closer
 			}{io.MultiReader(bytes.NewReader(seen), r.Body), r.Body} // the app reads what the WAF read, then the rest
 			if err == nil {
-				release, ok := g.slots.take(key, g.inspectWait)
-				if !ok {
+				if !take() {
 					return g.unchecked(w, r, app, "inspection busy", http.StatusServiceUnavailable)
 				}
-				defer release()
 				if g.inspecting != nil {
 					g.inspecting()
 				}
@@ -180,13 +188,17 @@ func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig)
 				}
 			}
 		} else {
+			if held != nil && g.inspecting != nil {
+				g.inspecting()
+			}
 			_, err = tx.ProcessRequestBody()
 		}
 		if err != nil {
 			return g.unchecked(w, r, app, "inspection error", http.StatusForbidden)
 		}
 	}
-	if it = tx.Interruption(); it == nil {
+	it := tx.Interruption()
+	if it == nil {
 		return false
 	}
 

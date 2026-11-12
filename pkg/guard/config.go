@@ -193,7 +193,7 @@ type Guard struct {
 	geo                *Geo
 	slots              *slots        // costly inspections running
 	inspectWait        time.Duration // longest wait for a slot
-	inspecting         func()        // test hook, run while a body inspection holds its slot
+	inspecting         func()        // test hook, run while an inspection holds its slot
 	built              func()        // test hook, run when SetConfig has built its WAF
 
 	setMu      sync.Mutex // one SetConfig at a time, from its build to its swap
