@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -93,7 +94,7 @@ func request(t *testing.T, c net.Conn, req string) string {
 	return string(resp)
 }
 
-func dialShare(t *testing.T, addr, serverName string) *tls.Conn {
+func dialShare(t *testing.T, addr, serverName string, protos ...string) *tls.Conn {
 	t.Helper()
 
 	raw, err := net.Dial("tcp", addr)
@@ -107,7 +108,7 @@ func dialShare(t *testing.T, addr, serverName string) *tls.Conn {
 	if err := proxyproto.WriteV2(raw, visitor, relay); err != nil {
 		t.Fatal(err)
 	}
-	tc := tls.Client(raw, &tls.Config{ServerName: serverName, InsecureSkipVerify: true})
+	tc := tls.Client(raw, &tls.Config{ServerName: serverName, InsecureSkipVerify: true, NextProtos: protos})
 	if err := tc.Handshake(); err != nil {
 		t.Fatal(err)
 	}
@@ -209,5 +210,62 @@ func TestPublicListenerIgnoresPROXY(t *testing.T) {
 	resp := request(t, raw, hdr.String()+"GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
 	if !strings.HasPrefix(resp, "HTTP/1.1 400") {
 		t.Fatalf("response = %q, want 400: the public port must not parse PROXY", resp)
+	}
+}
+
+func TestShareListenerSpeaksHTTP2(t *testing.T) {
+	dir := t.TempDir()
+	def, err := common.SelfSigned(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSharePair(t, dir, "*.mybox.box.example.org")
+	picker, err := common.NewCertPicker(def, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xff := make(chan string, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		xff <- r.Header.Get("X-Forwarded-For")
+	}))
+	defer backend.Close()
+	mgmt := newShareManagement(t, dir)
+	if err := mgmt.SetHost(service.HostRoute{Host: shareHost, Target: backend.URL}); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := serveShare(dir, picker.Config(), route.NewGatewayRoute(mgmt).GetShareRoute())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	b, err := os.ReadFile(filepath.Join(dir, common.ShareAddrFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := strings.TrimSpace(string(b))
+
+	// A client that offers only HTTP/1.1 (a WebSocket, an old client) still gets it.
+	if p := dialShare(t, addr, shareHost, "http/1.1").ConnectionState().NegotiatedProtocol; p != "http/1.1" {
+		t.Fatalf("HTTP/1.1-only client negotiated %q", p)
+	}
+
+	// A browser gets h2, and the request still reaches the app with the visitor's address.
+	client := &http.Client{Transport: &http.Transport{
+		ForceAttemptHTTP2: true,
+		DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+			return dialShare(t, addr, shareHost, "h2", "http/1.1"), nil
+		},
+	}}
+	defer client.CloseIdleConnections()
+	resp, err := client.Get("https://" + shareHost + "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.ProtoMajor != 2 || resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %s %d, want HTTP/2.0 200", resp.Proto, resp.StatusCode)
+	}
+	if got := <-xff; got != "203.0.113.9" {
+		t.Fatalf("backend saw X-Forwarded-For %q, want the visitor", got)
 	}
 }
