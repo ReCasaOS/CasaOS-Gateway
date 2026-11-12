@@ -3,28 +3,16 @@ package guard
 import "testing"
 
 func TestKey(t *testing.T) {
-	for in, want := range map[string]string{
-		"203.0.113.9:4444":         "203.0.113.9",
-		"[::ffff:203.0.113.9]:1":   "203.0.113.9",
-		"[2001:db8:1:2:aaaa::1]:1": "2001:db8:1:2::/64",
-		"[2001:db8:1:2:bbbb::9]:1": "2001:db8:1:2::/64",
-		"not an address":           "not an address",
+	for _, c := range []struct{ in, key, ip string }{
+		{"203.0.113.9:4444", "203.0.113.9", "203.0.113.9"},
+		{"[::ffff:203.0.113.9]:1", "203.0.113.9", "203.0.113.9"},
+		{"[2001:db8:1:2:aaaa::1]:1", "2001:db8:1:2::/64", "2001:db8:1:2:aaaa::1"},
+		{"[2001:db8:1:2:bbbb::9]:1", "2001:db8:1:2::/64", "2001:db8:1:2:bbbb::9"},
+		{"[fe80::1%eth0]:1", "fe80::/64", "fe80::1"},
+		{"not an address", "not an address", "not an address"},
 	} {
-		key, ip := Key(in)
-		if key != want {
-			t.Errorf("Key(%q) key = %q, want %q", in, key, want)
-		}
-		if in == "[2001:db8:1:2:aaaa::1]:1" && ip != "2001:db8:1:2:aaaa::1" {
-			t.Errorf("ip = %q", ip)
-		}
-		if in == "[::ffff:203.0.113.9]:1" && ip != "203.0.113.9" {
-			t.Errorf("ip = %q", ip)
-		}
-		if in == "[fe80::1%eth0]:1" && ip != "fe80::1" {
-			t.Errorf("ip = %q", ip)
-		}
-		if in == "not an address" && ip != in {
-			t.Errorf("ip = %q, want unchanged", ip)
+		if key, ip := Key(c.in); key != c.key || ip != c.ip {
+			t.Errorf("Key(%q) = %q, %q; want %q, %q", c.in, key, ip, c.key, c.ip)
 		}
 	}
 }

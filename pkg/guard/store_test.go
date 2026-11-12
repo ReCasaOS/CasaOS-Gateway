@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,4 +199,32 @@ func TestExpiredStateDroppedOnLoad(t *testing.T) {
 	n := len(g2.strikes)
 	g2.sm.Unlock()
 	assert.Equal(t, n, 0)
+}
+
+func TestFlushPrunesExpired(t *testing.T) {
+	c := startClock()
+	dir := t.TempDir()
+	g := newTestGuard(t, dir, c)
+	g.BanKey("k", "k", "a", "waf")
+	c.add(31*24*time.Hour + time.Hour) // ban over, strikes forgotten
+	assert.NilError(t, g.Flush())
+
+	g.sm.Lock()
+	assert.Equal(t, len(g.bans), 0)
+	assert.Equal(t, len(g.strikes), 0)
+	g.sm.Unlock()
+	raw, err := os.ReadFile(filepath.Join(dir, StateFileName))
+	assert.NilError(t, err)
+	assert.Assert(t, !strings.Contains(string(raw), `"key":"k"`), string(raw))
+}
+
+func TestWaveStartsPrunedWhenABanStarts(t *testing.T) {
+	c := startClock()
+	g := newTestGuard(t, t.TempDir(), c)
+	g.BanKey("a", "a", "x", "scan")
+	c.add(11 * time.Minute)
+	g.BanKey("b", "b", "x", "scan")
+	g.sm.Lock()
+	assert.Equal(t, len(g.starts), 1)
+	g.sm.Unlock()
 }

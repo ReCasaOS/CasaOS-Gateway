@@ -159,7 +159,13 @@ func (g *Guard) Flush() error {
 		g.sm.Unlock()
 		return nil
 	}
-	g.pruneStrikes(g.now())
+	now := g.now()
+	g.pruneStrikes(now)
+	for k, b := range g.bans {
+		if !b.Until.After(now) {
+			delete(g.bans, k)
+		}
+	}
 	st := stateFile{Events: make([]*Event, len(g.journal)), Bans: []Ban{}, Strikes: map[string]strike{}, Used: map[string]time.Time{}}
 	for i, e := range g.journal {
 		c := *e
