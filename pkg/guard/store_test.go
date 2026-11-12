@@ -99,6 +99,9 @@ func TestJournalGroupsAndTrims(t *testing.T) {
 	n := len(g.journal)
 	g.sm.Unlock()
 	assert.Equal(t, n, 10000)
+	g.sm.Lock()
+	assert.Assert(t, len(g.last) <= 10000, len(g.last))
+	g.sm.Unlock()
 	assert.Equal(t, g.Events("", "", 1)[0].Key, "k10004")
 }
 
@@ -155,4 +158,44 @@ func TestWaves(t *testing.T) {
 
 	c.add(11 * time.Minute)
 	assert.Equal(t, len(g.Status().Waves), 0)
+}
+
+func TestBannedKeyGroupsApartFromBlocked(t *testing.T) {
+	c := startClock()
+	g := newTestGuard(t, t.TempDir(), c)
+	e := Event{Key: "k", App: "a", Reason: "scan", Action: "blocked"}
+	g.Record(e)
+	c.add(10 * time.Second)
+	e.Action = "banned"
+	g.Record(e)
+	assert.Equal(t, len(g.Events("", "", 10)), 2)
+}
+
+func TestBanKeyOnBannedKeyKeepsBan(t *testing.T) {
+	c := startClock()
+	g := newTestGuard(t, t.TempDir(), c)
+	first := g.BanKey("k", "k", "a", "waf")
+	c.add(time.Minute)
+	again := g.BanKey("k", "k", "a", "scan")
+	assert.DeepEqual(t, again, first)
+	g.Unban("k")
+	assert.Equal(t, g.BanKey("k", "k", "a", "waf").Strikes, 2)
+}
+
+func TestExpiredStateDroppedOnLoad(t *testing.T) {
+	c := startClock()
+	dir := t.TempDir()
+	g := newTestGuard(t, dir, c)
+	g.BanKey("k", "k", "a", "waf")
+	g.Unban("gone")
+	assert.NilError(t, g.Flush())
+
+	c.add(40 * 24 * time.Hour)
+	g2 := newTestGuard(t, dir, c)
+	_, ok := g2.Banned("k")
+	assert.Assert(t, !ok)
+	g2.sm.Lock()
+	n := len(g2.strikes)
+	g2.sm.Unlock()
+	assert.Equal(t, n, 0)
 }

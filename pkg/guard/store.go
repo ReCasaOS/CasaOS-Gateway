@@ -63,8 +63,8 @@ type strike struct {
 }
 
 type groupKey struct {
-	key, app, reason string
-	rule             int
+	key, app, reason, action string
+	rule                     int
 }
 
 type waveStart struct {
@@ -74,7 +74,8 @@ type waveStart struct {
 
 // store is in memory under sm; the caller (main) runs Flush every 30 s and on shutdown.
 type store struct {
-	sm      sync.Mutex
+	sm      sync.RWMutex
+	flushMu sync.Mutex // one Flush at a time; the write happens outside sm
 	dirty   bool
 	journal []*Event // oldest first
 	last    map[groupKey]*Event
@@ -120,7 +121,7 @@ func (g *Guard) loadState() {
 	for _, e := range st.Events {
 		if e != nil {
 			g.journal = append(g.journal, e)
-			g.last[groupKey{e.Key, e.App, e.Reason, e.Rule}] = e
+			g.last[groupKey{e.Key, e.App, e.Reason, e.Action, e.Rule}] = e
 		}
 	}
 	g.trim(now)
@@ -132,22 +133,60 @@ func (g *Guard) loadState() {
 	for k, v := range st.Strikes {
 		g.strikes[k] = v
 	}
+	g.pruneStrikes(now)
 	for k, v := range st.Used {
 		g.used[k] = v
 	}
 }
 
-// Flush writes guard-state.json by rename when something changed since the last Flush.
+// pruneStrikes forgets the strikes whose 30 days are over.
+func (g *Guard) pruneStrikes(now time.Time) {
+	for k, v := range g.strikes {
+		if now.Sub(v.Last) >= strikeMemory {
+			delete(g.strikes, k)
+		}
+	}
+}
+
+// Flush writes guard-state.json by rename when something changed since the last Flush. The state
+// is copied under the lock; marshalling and writing happen outside it.
 func (g *Guard) Flush() error {
+	g.flushMu.Lock()
+	defer g.flushMu.Unlock()
+
 	g.sm.Lock()
-	defer g.sm.Unlock()
 	if !g.dirty {
+		g.sm.Unlock()
 		return nil
 	}
-	st := stateFile{Events: g.journal, Bans: []Ban{}, Strikes: g.strikes, Used: g.used}
+	g.pruneStrikes(g.now())
+	st := stateFile{Events: make([]*Event, len(g.journal)), Bans: []Ban{}, Strikes: map[string]strike{}, Used: map[string]time.Time{}}
+	for i, e := range g.journal {
+		c := *e
+		st.Events[i] = &c
+	}
 	for _, b := range g.bans {
 		st.Bans = append(st.Bans, b)
 	}
+	for k, v := range g.strikes {
+		st.Strikes[k] = v
+	}
+	for k, v := range g.used {
+		st.Used[k] = v
+	}
+	g.dirty = false
+	g.sm.Unlock()
+
+	err := g.writeState(st)
+	if err != nil {
+		g.sm.Lock()
+		g.dirty = true
+		g.sm.Unlock()
+	}
+	return err
+}
+
+func (g *Guard) writeState(st stateFile) error {
 	raw, err := json.Marshal(st)
 	if err != nil {
 		return err
@@ -155,11 +194,7 @@ func (g *Guard) Flush() error {
 	if err := os.MkdirAll(g.dataPath, 0o700); err != nil {
 		return err
 	}
-	if err := writeFileAtomic(filepath.Join(g.dataPath, StateFileName), raw); err != nil {
-		return err
-	}
-	g.dirty = false
-	return nil
+	return writeFileAtomic(filepath.Join(g.dataPath, StateFileName), raw)
 }
 
 // trim drops lines older than 7 days, then the oldest beyond 10 000.
@@ -170,6 +205,11 @@ func (g *Guard) trim(now time.Time) {
 	}
 	if n := len(g.journal) - i - journalMaxLines; n > 0 {
 		i += n
+	}
+	for _, e := range g.journal[:i] {
+		if gk := (groupKey{e.Key, e.App, e.Reason, e.Action, e.Rule}); g.last[gk] == e {
+			delete(g.last, gk)
+		}
 	}
 	if i > 0 {
 		g.journal = append([]*Event(nil), g.journal[i:]...)
@@ -189,7 +229,7 @@ func (g *Guard) Record(e Event) {
 		e.Count = 1
 	}
 	g.dirty = true
-	gk := groupKey{e.Key, e.App, e.Reason, e.Rule}
+	gk := groupKey{e.Key, e.App, e.Reason, e.Action, e.Rule}
 	if p := g.last[gk]; p != nil && e.Time.Sub(p.Time) < groupWindow {
 		p.Count += e.Count
 		return
@@ -219,12 +259,11 @@ func (g *Guard) Events(app, reason string, limit int) []Event {
 
 // Banned returns the active ban of key.
 func (g *Guard) Banned(key string) (Ban, bool) {
-	g.sm.Lock()
-	defer g.sm.Unlock()
+	g.sm.RLock()
+	defer g.sm.RUnlock()
 	b, ok := g.bans[key]
 	if ok && !b.Until.After(g.now()) {
-		delete(g.bans, key)
-		return Ban{}, false
+		return Ban{}, false // Bans() removes it
 	}
 	return b, ok
 }
@@ -254,7 +293,14 @@ func (g *Guard) BanKey(key, ip, app, reason string) Ban {
 	s.Last = b.Until
 	g.strikes[key] = s
 	g.bans[key] = b
-	g.starts = append(g.starts, waveStart{app, now})
+	cut := now.Add(-waveWindow)
+	keep := g.starts[:0]
+	for _, w := range g.starts {
+		if w.at.After(cut) {
+			keep = append(keep, w)
+		}
+	}
+	g.starts = append(keep, waveStart{app, now})
 	g.dirty = true
 	return b
 }

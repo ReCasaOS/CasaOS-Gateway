@@ -17,6 +17,12 @@ func TestKey(t *testing.T) {
 		if in == "[2001:db8:1:2:aaaa::1]:1" && ip != "2001:db8:1:2:aaaa::1" {
 			t.Errorf("ip = %q", ip)
 		}
+		if in == "[::ffff:203.0.113.9]:1" && ip != "203.0.113.9" {
+			t.Errorf("ip = %q", ip)
+		}
+		if in == "[fe80::1%eth0]:1" && ip != "fe80::1" {
+			t.Errorf("ip = %q", ip)
+		}
 		if in == "not an address" && ip != in {
 			t.Errorf("ip = %q, want unchanged", ip)
 		}

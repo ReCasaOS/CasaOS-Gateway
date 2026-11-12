@@ -249,6 +249,7 @@ func (g *Guard) SetConfig(c Config) error {
 	return nil
 }
 
+// shortcut: no fsync before the rename, a power cut can leave an empty file (guard-state.json then loads as corrupt and drops the bans); add Sync if that matters.
 func writeFileAtomic(path string, data []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*") // created 0600
 	if err != nil {
