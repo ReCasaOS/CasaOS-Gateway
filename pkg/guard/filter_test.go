@@ -63,7 +63,9 @@ func get(h http.Handler, host, ip, path string, hdr ...string) *httptest.Respons
 	return w
 }
 
-func do(h http.Handler, host, ip string) *httptest.ResponseRecorder { return get(h, host, ip, "/x?q=1") }
+func do(h http.Handler, host, ip string) *httptest.ResponseRecorder {
+	return get(h, host, ip, "/x?q=1")
+}
 
 func setup(t *testing.T, cfg *Config) (*Guard, *clock, *fakeApp, http.Handler) {
 	t.Helper()
