@@ -90,6 +90,13 @@ func TestGatePageForBrowser(t *testing.T) {
 	assert.Assert(t, strings.Contains(body, `name="next" value="/"`), body)
 	assert.Equal(t, a.hits, 0)
 
+	// a long next is dropped, so the form posted back stays under 4 KiB
+	long := "/?" + strings.Repeat("a=b&", 500)
+	body = get(h, gh, visitorIP, EntryPath+"?next="+url.QueryEscape(long)).Body.String()
+	assert.Assert(t, strings.Contains(body, `name="next" value="/"`), body)
+	w = postCode(h, gh, visitorIP, url.Values{"code": {goodCode}, "next": {"/?" + strings.Repeat("a=b&", 255)}})
+	assert.Equal(t, w.Code, http.StatusSeeOther)
+
 	// the app name is escaped
 	cfg.Apps[gh] = AppConfig{App: "<b>x", Access: "code", Policy: cfg.Apps[gh].Policy}
 	_, _, _, h = setup(t, &cfg)
@@ -255,6 +262,11 @@ func TestCodeFailsBan(t *testing.T) {
 	_, banned = g.Banned("192.0.2.5")
 	assert.Assert(t, !banned)
 	assert.Equal(t, len(g.codes), 1) // the other address only
+
+	// bounded: the counters of past windows go at the next sweep
+	c.add(601 * time.Second)
+	postCode(h, gh, "198.51.100.4", wrong)
+	assert.Equal(t, len(g.codes), 1) // the newcomer
 }
 
 func TestRevokedGenRejected(t *testing.T) {

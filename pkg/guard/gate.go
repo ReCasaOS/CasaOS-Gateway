@@ -17,6 +17,7 @@ const (
 	sessionLife    = 30 * 24 * time.Hour
 	sessionRefresh = 24 * time.Hour
 	formMax        = 4 << 10
+	nextMax        = 1 << 10
 )
 
 // accessGate is the gate hook (step 7), run for every host in Apps. It always takes the session
@@ -168,9 +169,10 @@ func (g *Guard) codeFailed(r *http.Request, app AppConfig, protection bool) {
 	g.Record(Event{IP: ip, Key: key, App: app.App, Path: EntryPath, Reason: "code", Action: action})
 }
 
-// localNext keeps next only when it is a path on this host, and not the entry page itself.
+// localNext keeps next only when it is a path on this host, and not the entry page itself. At most
+// 1 KiB: encoded (×3 at worst) it must still fit, with the code, in the 4 KiB form posted back.
 func localNext(next string) string {
-	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.ContainsAny(next, `\`) ||
+	if len(next) > nextMax || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.ContainsAny(next, `\`) ||
 		strings.ContainsFunc(next, func(c rune) bool { return c < 0x20 || c == 0x7f }) { // browsers drop tabs and newlines: "/\t/x" is "//x"
 		return "/"
 	}
