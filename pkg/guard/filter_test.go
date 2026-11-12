@@ -307,6 +307,12 @@ func TestHooksRunInOrder(t *testing.T) {
 	assert.DeepEqual(t, calls, []string{"country:jellyfin"})
 	assert.Equal(t, a.hits, 2)
 
+	// allowed passes even a ban of its key (spec: the allow list keeps the owner from being banned), the gate still runs
+	g.BanKey("192.0.2.5", "192.0.2.5", "jellyfin", "scan")
+	calls, stop = nil, ""
+	assert.Equal(t, do(h, jf, "192.0.2.5").Code, http.StatusOK)
+	assert.DeepEqual(t, calls, []string{"gate:jellyfin"})
+
 	cfg.Protection = false
 	assert.NilError(t, g.SetConfig(cfg))
 	calls, stop = nil, ""
