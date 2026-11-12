@@ -14,6 +14,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS-Common/model"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 	"go.uber.org/zap"
 )
 
@@ -31,6 +32,7 @@ type Management struct {
 	hostProxyMap  map[string]*httputil.ReverseProxy
 
 	State *State
+	Guard *guard.Guard // set by whoever builds the service; the routes need it
 }
 
 func NewManagementService(state *State) *Management {

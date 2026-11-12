@@ -10,12 +10,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/labstack/echo/v4"
 
 	"github.com/ReCasaOS/CasaOS-Common/model"
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 	"github.com/ReCasaOS/CasaOS-Gateway/service"
 	"gotest.tools/v3/assert"
 )
@@ -24,6 +26,7 @@ var (
 	_router http.Handler
 	_state  *service.State
 	_secret string
+	_guard  *guard.Guard
 )
 
 // asService makes a request what a service of this box sends: from loopback,
@@ -54,6 +57,10 @@ func setup(t *testing.T) func(t *testing.T) {
 	_secret = "Internal " + strings.TrimSpace(string(raw))
 
 	management := service.NewManagementService(_state)
+	if management.Guard, err = guard.New(tmpdir, tmpdir, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	_guard = management.Guard
 	managementRoute := NewManagementRoute(management)
 	_router = managementRoute.GetRoute()
 
@@ -370,6 +377,41 @@ func TestHostsNeedTheSecretToo(t *testing.T) {
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 
 	w := httptest.NewRecorder()
+	_router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestGuardRoutes(t *testing.T) {
+	defer setup(t)(t)
+
+	w := hostCall(http.MethodGet, "/v1/gateway/guard", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, `{"version":1,"configured":false,"geo":{"country":false,"asn":false},"people_last_used":{},"waves":[]}`, strings.TrimSpace(w.Body.String()))
+
+	body := `{"secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","protection":true,"apps":{"a.b.c":{"app":"a","access":"code","policy":{"waf":"off","rules_off":[],"allow":[],"block":[],"countries":{"mode":"none","list":[]},"rate_per_min":600,"ban":{"waf_hits":10,"waf_window_s":600,"scan_404":100,"scan_window_s":60,"rate_strikes":3,"rate_window_s":600,"code_fails":5,"code_window_s":600}}}},"people":[]}`
+	w = hostCall(http.MethodPut, "/v1/gateway/guard", body)
+	assert.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
+
+	w = hostCall(http.MethodGet, "/v1/gateway/guard", "")
+	assert.Assert(t, strings.Contains(w.Body.String(), `"configured":true`), w.Body.String())
+
+	w = hostCall(http.MethodPut, "/v1/gateway/guard", strings.Replace(body, `"waf":"off"`, `"waf":"x"`, 1))
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Assert(t, strings.Contains(w.Body.String(), "policy.waf"), w.Body.String())
+
+	w = hostCall(http.MethodPut, "/v1/gateway/guard", "not json")
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	// the previous config is still the one held
+	w = hostCall(http.MethodGet, "/v1/gateway/guard", "")
+	assert.Assert(t, strings.Contains(w.Body.String(), `"configured":true`), w.Body.String())
+	assert.Equal(t, 1, len(_guard.Config().Apps))
+	assert.Equal(t, "off", _guard.Config().Apps["a.b.c"].Policy.WAF)
+
+	req, _ := http.NewRequest(http.MethodPut, "/v1/gateway/guard", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:0"
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	w = httptest.NewRecorder()
 	_router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }

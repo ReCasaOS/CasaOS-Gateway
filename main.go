@@ -23,6 +23,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS-Gateway/common"
 	"github.com/ReCasaOS/CasaOS-Gateway/pkg"
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 	"github.com/ReCasaOS/CasaOS-Gateway/route"
 	"github.com/ReCasaOS/CasaOS-Gateway/service"
 	"go.uber.org/fx"
@@ -42,6 +43,7 @@ var (
 	_httpsServer     *http.Server
 	_httpsPortServed string
 	_gatewayAddress string
+	_dataPath       string
 	_picker         *common.CertPicker // nil when it could not be built: see the gateway hook
 
 	_managementServiceReady = make(chan struct{})
@@ -87,6 +89,8 @@ func setup() {
 		logger.Error("Failed to set runtime path", zap.Any("error", err), zap.Any(common.ConfigKeyRuntimePath, runtimePath))
 		panic(err)
 	}
+
+	_dataPath = config.GetString(common.ConfigKeyDataPath)
 
 	gatewayPort := config.GetString(common.ConfigKeyGatewayPort)
 	if err := _state.SetGatewayPort(gatewayPort); err != nil {
@@ -175,7 +179,14 @@ func main() {
 
 	app := fx.New(
 		fx.Provide(func() *service.State { return _state }),
-		fx.Provide(service.NewManagementService),
+		fx.Provide(func(state *service.State) (*service.Management, error) {
+			m := service.NewManagementService(state)
+
+			var err error
+			m.Guard, err = guard.New(state.GetRuntimePath(), _dataPath, time.Now)
+
+			return m, err
+		}),
 		fx.Provide(route.NewManagementRoute),
 		fx.Provide(route.NewGatewayRoute),
 		fx.Provide(route.NewStaticRoute),

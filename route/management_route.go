@@ -10,6 +10,7 @@ import (
 	"github.com/ReCasaOS/CasaOS-Common/model"
 	"github.com/ReCasaOS/CasaOS-Common/utils/common_err"
 	"github.com/ReCasaOS/CasaOS-Common/utils/jwt"
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 	"github.com/ReCasaOS/CasaOS-Gateway/service"
 	echojwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
@@ -152,6 +153,29 @@ func (m *ManagementRoute) buildV1RouteGroup(v1Group *echo.Group) {
 					Success: common_err.SERVICE_ERROR,
 					Message: err.Error(),
 				})
+			}
+
+			return ctx.NoContent(http.StatusNoContent)
+		})
+
+		// Protection of the shared apps: the core pushes the whole config, atomically.
+		v1GatewayGroup.GET("/guard", func(ctx echo.Context) error {
+			return ctx.JSON(http.StatusOK, m.management.Guard.Status())
+		})
+
+		v1GatewayGroup.PUT("/guard", func(ctx echo.Context) error {
+			var c guard.Config
+
+			if err := ctx.Bind(&c); err != nil {
+				return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.CLIENT_ERROR, Message: "a guard config is required"})
+			}
+
+			if err := m.management.Guard.SetConfig(c); err != nil {
+				if errors.Is(err, guard.ErrInvalid) {
+					return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
+				}
+
+				return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 			}
 
 			return ctx.NoContent(http.StatusNoContent)
