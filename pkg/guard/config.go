@@ -73,6 +73,7 @@ type Person struct {
 var (
 	countryPattern  = regexp.MustCompile(`^[A-Z]{2}$`)
 	codeHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	personIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`) // goes in the cookie as is: http.SetCookie must not alter it
 )
 
 func validIPOrCIDR(s string) bool {
@@ -101,8 +102,8 @@ func (c Config) Validate() error {
 		}
 	}
 	for i, person := range c.People {
-		if person.ID == "" {
-			return invalid("people[%d].id: empty", i)
+		if !personIDPattern.MatchString(person.ID) {
+			return invalid("people[%d].id: want 1 to 64 of A-Z a-z 0-9 _ -", i)
 		}
 		if !codeHashPattern.MatchString(person.CodeHash) {
 			return invalid("people[%d].code_hash: not 64 lowercase hex characters", i)

@@ -90,10 +90,16 @@ func (g *GatewayRoute) GetShareRoute() http.Handler {
 	return h
 }
 
+// codeHost reports a host whose guard config wants an access code: it is served only on the share
+// listener, where the gate runs, never by host routing on the dashboard listener.
+func (g *GatewayRoute) codeHost(host string) bool {
+	return g.management.Guard != nil && g.management.Guard.Config().Apps[guard.NormalizeHost(host)].Access == "code"
+}
+
 func (g *GatewayRoute) GetRoute() *http.ServeMux {
 	gatewayMux := http.NewServeMux()
 	gatewayMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if g.serveHost(w, r) {
+		if !g.codeHost(r.Host) && g.serveHost(w, r) {
 			return
 		}
 

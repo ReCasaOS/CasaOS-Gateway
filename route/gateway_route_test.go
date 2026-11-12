@@ -194,6 +194,51 @@ func TestWebSocketPassesThroughHostRoute(t *testing.T) {
 	assert.DeepEqual(t, env.app.list(), []string{"/ws"})
 }
 
+// A host behind an access code is not host-routed on the dashboard listener: it falls through to
+// path routing as if it were not in the host table. Open hosts are unchanged.
+func TestDashboardListenerSkipsCodeHosts(t *testing.T) {
+	const openHost = "photos.mybox.box.example.org"
+	env := &shareEnv{dash: &seen{}, app: &seen{}}
+	state := service.NewState()
+	assert.NilError(t, state.SetRuntimePath(t.TempDir()))
+	management := service.NewManagementService(state)
+	dash := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { env.dash.add(r.URL.Path) }))
+	t.Cleanup(dash.Close)
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { env.app.add(r.Host + r.URL.Path) }))
+	t.Cleanup(app.Close)
+	assert.NilError(t, management.CreateRoute(&model.Route{Path: "/v1", Target: dash.URL}))
+	assert.NilError(t, management.SetHost(service.HostRoute{Host: appHost, Target: app.URL}))
+	assert.NilError(t, management.SetHost(service.HostRoute{Host: openHost, Target: app.URL}))
+	pub := httptest.NewServer(NewGatewayRoute(management).GetRoute())
+	t.Cleanup(pub.Close)
+
+	// no guard: unchanged
+	code, _ := get(t, pub.URL, appHost, "/x")
+	assert.Equal(t, code, http.StatusOK)
+	assert.DeepEqual(t, env.app.list(), []string{appHost + "/x"})
+
+	var err error
+	management.Guard, err = guard.New(t.TempDir(), t.TempDir(), time.Now)
+	assert.NilError(t, err)
+	pol := guard.Policy{WAF: "off", Countries: guard.Countries{Mode: "none"}, RatePerMin: 600, Ban: guard.BanRules{
+		WAFHits: 10, WAFWindowS: 600, Scan404: 100, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}}
+	assert.NilError(t, management.Guard.SetConfig(guard.Config{Secret: make([]byte, 32), Apps: map[string]guard.AppConfig{
+		appHost:  {App: "jellyfin", Access: "code", Policy: pol},
+		openHost: {App: "photos", Access: "open", Policy: pol},
+	}}))
+
+	for _, host := range []string{appHost, "JellyFin.mybox.box.example.org:80"} {
+		code, _ = get(t, pub.URL, host, "/x")
+		assert.Equal(t, code, http.StatusNotFound) // path routing: no route for /x
+		code, _ = get(t, pub.URL, host, "/v1/y")
+		assert.Equal(t, code, http.StatusOK) // path routing: the dashboard's route
+	}
+	code, _ = get(t, pub.URL, openHost, "/z")
+	assert.Equal(t, code, http.StatusOK)
+	assert.DeepEqual(t, env.app.list(), []string{appHost + "/x", openHost + "/z"})
+	assert.DeepEqual(t, env.dash.list(), []string{"/v1/y", "/v1/y"})
+}
+
 // Only the app's own 404s count toward a scan ban, not the Gateway's for a host it does not serve.
 func TestShareScanCountsOnlyTheAppsAnswers(t *testing.T) {
 	const ghost = "ghost.mybox.box.example.org" // in the guard config, not in the host table

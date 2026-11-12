@@ -68,6 +68,7 @@ func TestGatePageForBrowser(t *testing.T) {
 	w := get(h, gh, visitorIP, "/", "Accept", "text/html,application/xhtml+xml")
 	assert.Equal(t, w.Code, http.StatusFound)
 	assert.Equal(t, w.Header().Get("Location"), "/.recasaos/acces?next=%2F")
+	assert.Equal(t, w.Header().Get("Cache-Control"), "no-store")
 	w = get(h, gh, visitorIP, "/web/?a=1", "Accept", "text/html")
 	assert.Equal(t, w.Header().Get("Location"), "/.recasaos/acces?next=%2Fweb%2F%3Fa%3D1")
 
@@ -111,6 +112,7 @@ func TestGate401ForNonPage(t *testing.T) {
 	w := get(h, gh, visitorIP, "/api", "Accept", "application/json")
 	assert.Equal(t, w.Code, http.StatusUnauthorized)
 	assert.Equal(t, w.Body.String(), "Access code required.\n")
+	assert.Equal(t, w.Header().Get("Cache-Control"), "no-store")
 	w = get(h, gh, visitorIP, "/socket", "Accept", "text/html", "Upgrade", "websocket", "Connection", "Upgrade", "Accept-Language", "fr")
 	assert.Equal(t, w.Code, http.StatusUnauthorized)
 	assert.Equal(t, w.Body.String(), "Code d'accès requis.\n")
@@ -130,6 +132,7 @@ func TestGoodCodeSetsCookieAndRedirects(t *testing.T) {
 	w := postCode(h, gh, visitorIP, url.Values{"code": {"abcd efgh jkmn"}, "next": {"/web/"}})
 	assert.Equal(t, w.Code, http.StatusSeeOther)
 	assert.Equal(t, w.Header().Get("Location"), "/web/")
+	assert.Equal(t, w.Header().Get("Cache-Control"), "no-store")
 	cookies := w.Result().Cookies()
 	assert.Equal(t, len(cookies), 1)
 	ck := cookies[0]

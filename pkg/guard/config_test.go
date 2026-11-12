@@ -67,6 +67,10 @@ func TestConfigValidate(t *testing.T) {
 		{"secret", func(c *Config) { c.Secret = c.Secret[:16] }, "secret"},
 		{"code hash", func(c *Config) { c.People[0].CodeHash = "abc" }, "people[0].code_hash"},
 		{"person id", func(c *Config) { c.People[0].ID = "" }, "people[0].id"},
+		{"person id with a dot", func(c *Config) { c.People[0].ID = "p.1" }, "people[0].id"},
+		{"person id with a space", func(c *Config) { c.People[0].ID = "p 1" }, "people[0].id"},
+		{"person id with a quote", func(c *Config) { c.People[0].ID = `p"1` }, "people[0].id"},
+		{"person id too long", func(c *Config) { c.People[0].ID = strings.Repeat("a", 65) }, "people[0].id"},
 		{"host case", func(c *Config) { c.Apps["Jellyfin.mybox.box.recasaos.org"] = c.Apps[host]; delete(c.Apps, host) }, `apps["Jellyfin.mybox.box.recasaos.org"]: not a normalised host`},
 		{"host dot", func(c *Config) { c.Apps[host+"."] = c.Apps[host]; delete(c.Apps, host) }, `apps["` + host + `."]: not a normalised host`},
 	}
@@ -79,6 +83,11 @@ func TestConfigValidate(t *testing.T) {
 				t.Fatalf("want an error naming %q, got %v", tc.field, err)
 			}
 		})
+	}
+	long := example(t)
+	long.People[0].ID = "Az09_-" + strings.Repeat("x", 58)
+	if err := long.Validate(); err != nil {
+		t.Fatalf("a 64-character id of the allowed set must validate: %v", err)
 	}
 }
 
