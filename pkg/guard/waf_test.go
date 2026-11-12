@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
@@ -13,10 +14,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/corazawaf/coraza/v3/types"
 	"gotest.tools/v3/assert"
 )
 
@@ -203,34 +206,67 @@ func (s *sink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.heap = m.HeapInuse
 }
 
+// multipartFile wraps body as the single file part of a multipart/form-data upload.
+func multipartFile(body io.Reader) (ctype string, r io.Reader, extra int) {
+	const head = "--b0undary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"big.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+	const tail = "\r\n--b0undary--\r\n"
+	return "multipart/form-data; boundary=b0undary", io.MultiReader(strings.NewReader(head), body, strings.NewReader(tail)), len(head) + len(tail)
+}
+
+// A 64 MiB upload streams to the app whole, unparsed (PUT) or parsed (multipart POST).
 func TestLargeUploadStreams(t *testing.T) {
 	const size = 64 << 20
+	for _, multi := range []bool{false, true} {
+		g := newTestGuard(t, t.TempDir(), startClock())
+		assert.NilError(t, g.SetConfig(wafConfig("block", nil)))
+		app := &sink{}
+		h := g.Handler(app)
+
+		var body io.Reader = io.LimitReader(rand.NewChaCha8([32]byte{1}), size)
+		method, ctype, total := http.MethodPut, "application/octet-stream", size
+		if multi {
+			var extra int
+			method = http.MethodPost
+			ctype, body, extra = multipartFile(body)
+			total += extra
+		}
+		sent := sha256.New()
+		r := httptest.NewRequest(method, "http://"+nc+"/upload", io.TeeReader(body, sent))
+		r.RemoteAddr = net.JoinHostPort(visitorIP, "4444")
+		r.ContentLength = int64(total)
+		r.Header.Set("Content-Length", strconv.Itoa(total))
+		r.Header.Set("Content-Type", ctype)
+		w := httptest.NewRecorder()
+
+		runtime.GC()
+		var before runtime.MemStats
+		runtime.ReadMemStats(&before)
+		h.ServeHTTP(w, r)
+
+		assert.Equal(t, w.Code, http.StatusOK, ctype)
+		assert.Equal(t, app.n, int64(total), ctype)
+		assert.DeepEqual(t, app.sum, sent.Sum(nil))
+		grew := int64(app.heap) - int64(before.HeapInuse)
+		t.Logf("%s: heap in use grew by %d KiB during the request", ctype, grew>>10)
+		assert.Assert(t, grew < 16<<20, "heap grew by %d bytes", grew)
+		assert.Equal(t, len(wafEvents(g)), 0, ctype)
+	}
+}
+
+// A multipart upload past the inspection limit is not refused as malformed (200003, 9100001).
+func TestMultipartUploadPasses(t *testing.T) {
 	cfg := wafConfig("block", nil)
-	g := newTestGuard(t, t.TempDir(), startClock())
-	assert.NilError(t, g.SetConfig(cfg))
-	app := &sink{}
-	h := g.Handler(app)
+	g, _, a, h := setup(t, &cfg)
+	file, _ := io.ReadAll(io.LimitReader(rand.NewChaCha8([32]byte{4}), 300<<10))
+	ctype, body, _ := multipartFile(bytes.NewReader(file))
+	want, _ := io.ReadAll(body)
 
-	sent := sha256.New()
-	body := io.TeeReader(io.LimitReader(rand.NewChaCha8([32]byte{1}), size), sent)
-	r := httptest.NewRequest(http.MethodPut, "http://"+nc+"/remote.php/dav/files/u/big.bin", body)
-	r.RemoteAddr = net.JoinHostPort(visitorIP, "4444")
-	r.ContentLength = size
-	r.Header.Set("Content-Length", strconv.Itoa(size))
-	r.Header.Set("Content-Type", "application/octet-stream")
-	w := httptest.NewRecorder()
-
-	runtime.GC()
-	var before runtime.MemStats
-	runtime.ReadMemStats(&before)
-	h.ServeHTTP(w, r)
-
+	w := send(h, http.MethodPost, jf, "/upload", ctype, bytes.NewReader(want))
 	assert.Equal(t, w.Code, http.StatusOK)
-	assert.Equal(t, app.n, int64(size))
-	assert.DeepEqual(t, app.sum, sent.Sum(nil))
-	grew := int64(app.heap) - int64(before.HeapInuse)
-	t.Logf("heap in use grew by %d KiB during the request", grew>>10)
-	assert.Assert(t, grew < 16<<20, "heap grew by %d bytes", grew)
+	got, err := io.ReadAll(a.seen.Body)
+	assert.NilError(t, err)
+	assert.Assert(t, bytes.Equal(got, want))
+	assert.Equal(t, len(wafEvents(g)), 0)
 }
 
 // A valid body cut at the inspection limit is not a malformed body; a malformed one is still refused.
@@ -328,54 +364,61 @@ func TestHostileHostRefused(t *testing.T) {
 	assert.Assert(t, errors.Is(err, ErrInvalid), "%v", err)
 }
 
-// slowGuard is a guard on block whose body inspections wait, inside their slot, until let is closed
-// or written to; each one announces itself on in.
-func slowGuard(t *testing.T) (g *Guard, h http.Handler, hits *atomic.Int32, in chan struct{}, let chan struct{}) {
+// slowGuard is a guard on mode whose body inspections wait, inside their slot, for let; each one
+// announces itself on in, and each request that starts waiting for a slot on queued.
+func slowGuard(t *testing.T, mode string) (g *Guard, h http.Handler, hits *atomic.Int32, in, queued, let chan struct{}) {
 	t.Helper()
 	g = newTestGuard(t, t.TempDir(), startClock())
-	assert.NilError(t, g.SetConfig(wafConfig("block", nil)))
-	in, let, hits = make(chan struct{}, 8), make(chan struct{}), &atomic.Int32{}
+	assert.NilError(t, g.SetConfig(wafConfig(mode, nil)))
+	in, queued, let, hits = make(chan struct{}, 8), make(chan struct{}, 8), make(chan struct{}), &atomic.Int32{}
 	g.inspecting = func() { in <- struct{}{}; <-let }
+	g.slots.queued = func() { queued <- struct{}{} }
 	h = g.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
 	return
 }
 
 func postForm(h http.Handler, ip string) int {
-	r := httptest.NewRequest(http.MethodPost, "http://"+jf+"/login", strings.NewReader("user=bob&remember=1"))
+	return postBody(h, ip, strings.NewReader("user=bob&remember=1"))
+}
+
+func postBody(h http.Handler, ip string, body io.Reader) int {
+	r := httptest.NewRequest(http.MethodPost, "http://"+jf+"/login", body)
 	r.RemoteAddr = net.JoinHostPort(ip, "4444")
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.Header.Set("Content-Length", "19")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w.Code
 }
 
-// entered waits briefly for an inspection to start; false when none does.
-func entered(in chan struct{}) bool {
+// notIn fails when an inspection has started.
+func notIn(t *testing.T, in chan struct{}) {
+	t.Helper()
 	select {
 	case <-in:
-		return true
-	case <-time.After(150 * time.Millisecond):
-		return false
+		t.Fatal("an inspection started without a slot")
+	default:
 	}
 }
 
 func TestBodyInspectionsCappedPerBox(t *testing.T) {
-	g, h, hits, in, let := slowGuard(t)
+	g, h, hits, in, queued, let := slowGuard(t, "block")
 	codes := make(chan int, 3)
 	for _, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"} {
 		go func() { codes <- postForm(h, ip) }()
 	}
-	assert.Assert(t, entered(in))
-	assert.Assert(t, entered(in))
-	assert.Assert(t, !entered(in)) // the third waits for a slot
+	<-in
+	<-in
+	<-queued
+	<-queued
+	<-queued
+	notIn(t, in) // both box slots are held: the third waits
 
 	// a request without a parsed body never waits for one
 	assert.Equal(t, get(h, jf, "203.0.113.4", "/x").Code, http.StatusOK)
 	assert.Equal(t, send(h, http.MethodPut, jf, "/f.bin", "application/octet-stream", strings.NewReader("raw bytes")).Code, http.StatusOK)
 
 	let <- struct{}{}
-	assert.Assert(t, entered(in)) // a slot freed: the third is inspected
+	<-in // a slot freed: the third is inspected
 	close(let)
 	for i := 0; i < 3; i++ {
 		assert.Equal(t, <-codes, http.StatusOK)
@@ -385,46 +428,191 @@ func TestBodyInspectionsCappedPerBox(t *testing.T) {
 }
 
 func TestBodyInspectionsCappedPerKey(t *testing.T) {
-	_, h, hits, in, let := slowGuard(t)
+	_, h, hits, in, queued, let := slowGuard(t, "block")
 	codes := make(chan int, 2)
 	for i := 0; i < 2; i++ {
 		go func() { codes <- postForm(h, "2001:db8::1") }()
 	}
-	assert.Assert(t, entered(in))
-	assert.Assert(t, !entered(in)) // same /64 key: the second waits though the box has a slot
+	<-in
+	<-queued
+	<-queued
+	notIn(t, in) // same /64 key: the second waits though the box has a slot
 	let <- struct{}{}
-	assert.Assert(t, entered(in))
+	<-in
 	close(let)
 	assert.Equal(t, <-codes, http.StatusOK)
 	assert.Equal(t, <-codes, http.StatusOK)
 	assert.Equal(t, hits.Load(), int32(2))
 }
 
-func TestBodyInspectionBusyIs503(t *testing.T) {
-	g, h, hits, in, let := slowGuard(t)
-	g.inspectWait = 100 * time.Millisecond // stands for the 2 s
-	first := make(chan int, 1)
-	go func() { first <- postForm(h, visitorIP) }()
-	assert.Assert(t, entered(in))
+// No slot within the wait: "block" answers 503, "observe" lets the request pass uninspected; one event, no ban count.
+func TestBodyInspectionBusy(t *testing.T) {
+	for _, c := range []struct {
+		mode, action string
+		code         int
+		hits         int32
+	}{{"block", "blocked", http.StatusServiceUnavailable, 0}, {"observe", "observed", http.StatusOK, 1}} {
+		g, h, hits, in, _, let := slowGuard(t, c.mode)
+		g.inspectWait = 100 * time.Millisecond // stands for the 2 s
+		first := make(chan int, 1)
+		go func() { first <- postForm(h, visitorIP) }()
+		<-in
 
-	r := httptest.NewRequest(http.MethodPost, "http://"+jf+"/login", strings.NewReader("user=bob&remember=1"))
+		r := httptest.NewRequest(http.MethodPost, "http://"+jf+"/login", strings.NewReader("user=bob&remember=1"))
+		r.RemoteAddr = net.JoinHostPort(visitorIP, "4444")
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		assert.Equal(t, w.Code, c.code, c.mode)
+		if c.mode == "block" {
+			assert.Equal(t, w.Body.String(), "This app is not available right now.\n")
+		}
+		assert.Equal(t, hits.Load(), c.hits, c.mode)
+		ev := wafEvents(g)
+		assert.Equal(t, len(ev), 1, c.mode)
+		assert.Equal(t, ev[0].Action, c.action)
+		assert.Equal(t, ev[0].Detail, "inspection busy")
+		assert.Equal(t, ev[0].Rule, 0)
+
+		close(let)
+		assert.Equal(t, <-first, http.StatusOK)
+		g.cm.Lock()
+		assert.Equal(t, len(g.wafHits), 0, c.mode) // no ban count
+		g.cm.Unlock()
+	}
+}
+
+// A panic during an inspection gives its slots back.
+func TestPanicReleasesSlots(t *testing.T) {
+	g, h, _, _, _, _ := slowGuard(t, "block")
+	g.inspecting = func() { panic("boom") }
+	for i := 0; i < 2; i++ {
+		func() {
+			defer func() { assert.Assert(t, recover() != nil) }()
+			postForm(h, visitorIP)
+		}()
+	}
+	g.inspecting = nil
+	g.inspectWait = 100 * time.Millisecond
+	assert.Equal(t, postForm(h, visitorIP), http.StatusOK)
+}
+
+type brokenBody struct{ n int }
+
+func (b *brokenBody) Read(p []byte) (int, error) {
+	if b.n > 0 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	b.n = copy(p, "user=bob")
+	return b.n, nil
+}
+
+// A body the WAF cannot read is refused on "block", and passes with an event on "observe"; no ban count.
+func TestInspectionErrorNotPassedOnBlock(t *testing.T) {
+	for _, c := range []struct {
+		mode, action string
+		code         int
+	}{{"block", "blocked", http.StatusForbidden}, {"observe", "observed", http.StatusOK}} {
+		g, h, hits, _, _, _ := slowGuard(t, c.mode)
+		g.inspecting = nil
+		assert.Equal(t, postBody(h, visitorIP, &brokenBody{}), c.code, c.mode)
+		assert.Equal(t, hits.Load() == 1, c.mode == "observe")
+		ev := wafEvents(g)
+		assert.Equal(t, len(ev), 1)
+		assert.Equal(t, ev[0].Action, c.action)
+		assert.Equal(t, ev[0].Detail, "inspection error")
+		assert.Equal(t, len(g.wafHits), 0)
+	}
+}
+
+// A client "host" header (kept beside :authority under HTTP/2) cannot borrow another app's rules_off.
+func TestHostHeaderCannotBorrowRulesOff(t *testing.T) {
+	cfg := wafConfig("block", nil)
+	app := cfg.Apps[jf]
+	app.Policy.RulesOff = []int{942100}
+	cfg.Apps[jf] = app
+	_, _, a, h := setup(t, &cfg)
+	r := httptest.NewRequest(http.MethodGet, "http://"+nc+sqli, nil)
 	r.RemoteAddr = net.JoinHostPort(visitorIP, "4444")
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header["Host"] = []string{jf}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
-	assert.Equal(t, w.Code, http.StatusServiceUnavailable)
-	assert.Equal(t, w.Body.String(), "This app is not available right now.\n")
-	assert.Equal(t, hits.Load(), int32(0)) // not passed uninspected
-	ev := wafEvents(g)
-	assert.Equal(t, len(ev), 1)
-	assert.Equal(t, ev[0].Action, "blocked")
-	assert.Equal(t, ev[0].Detail, "inspection busy")
-	assert.Equal(t, ev[0].Rule, 0)
+	assert.Equal(t, w.Code, http.StatusForbidden)
+	assert.Equal(t, a.hits, 0)
+}
 
-	close(let)
-	assert.Equal(t, <-first, http.StatusOK)
-	assert.Equal(t, hits.Load(), int32(1))
-	g.cm.Lock()
-	assert.Equal(t, len(g.wafHits), 0) // no ban count
-	g.cm.Unlock()
+type fakeMeta struct {
+	types.RuleMetadata
+	id  int
+	sev types.RuleSeverity
+}
+
+func (m fakeMeta) ID() int                      { return m.id }
+func (m fakeMeta) Severity() types.RuleSeverity { return m.sev }
+func (m fakeMeta) Raw() string {
+	return fmt.Sprintf(`SecRule X "@rx y" "id:%d,msg:'rule %d'"`, m.id, m.id)
+}
+
+type fakeMatch struct {
+	types.MatchedRule
+	md fakeMeta
+}
+
+func (m fakeMatch) Rule() types.RuleMetadata { return m.md }
+
+func TestDecidingRuleIsMostSevere(t *testing.T) {
+	ms := func(rules ...fakeMeta) []types.MatchedRule {
+		out := []types.MatchedRule{}
+		for _, r := range rules {
+			out = append(out, fakeMatch{md: r})
+		}
+		return out
+	}
+	warning, critical, critical2, total := fakeMeta{id: 920190, sev: 4}, fakeMeta{id: 942100, sev: 2}, fakeMeta{id: 932100, sev: 2}, fakeMeta{id: 949110, sev: 2}
+	unset := fakeMeta{id: 901001, sev: types.RuleSeverityUnset}
+
+	id, msg := decidingRule(ms(unset, warning, critical, critical2, total), 949110)
+	assert.Equal(t, id, 942100) // most severe, first among equals
+	assert.Equal(t, msg, "rule 942100")
+	id, _ = decidingRule(ms(unset, total), 949110)
+	assert.Equal(t, id, 949110) // nothing else with a severity
+	id, _ = decidingRule(ms(critical, fakeMeta{id: 9100001, sev: 2}), 9100001)
+	assert.Equal(t, id, 9100001) // a direct deny reports the rule that denied
+}
+
+// Requests keep being answered while SetConfig swaps the WAF.
+func TestSetConfigDuringRequests(t *testing.T) {
+	g := newTestGuard(t, t.TempDir(), startClock())
+	assert.NilError(t, g.SetConfig(wafConfig("block", nil)))
+	h := g.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := 0; ; n++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				ip := fmt.Sprintf("198.51.100.%d", 1+(i*50+n)%200)
+				var code int
+				if n%2 == 0 {
+					code = get(h, jf, ip, sqli).Code
+				} else {
+					code = postBody(h, ip, strings.NewReader("user=bob"))
+				}
+				if code != http.StatusOK && code != http.StatusForbidden {
+					t.Errorf("code %d", code)
+				}
+			}
+		}()
+	}
+	for _, mode := range []string{"observe", "off", "block", "observe"} {
+		assert.NilError(t, g.SetConfig(wafConfig(mode, nil)))
+	}
+	close(stop)
+	wg.Wait()
 }

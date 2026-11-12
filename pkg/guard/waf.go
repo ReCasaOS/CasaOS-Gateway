@@ -82,7 +82,7 @@ func buildWAF(apps map[string]AppConfig) (coraza.WAF, error) {
 // wafFilter is the WAF hook (step 6). It inspects the request only (headers, then the first 64 KiB of
 // a body Coraza parses, which the app still receives whole); a request the CRS would interrupt is
 // journaled, and on "block" answered 403 and counted toward a ban. Body inspections are capped (see
-// slots): one that gets no slot within 2 s is answered 503.
+// slots): one that gets no slot within 2 s is answered 503 on "block" and passes on "observe".
 func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig) bool {
 	mode := app.Policy.WAF
 	if mode == "off" || (app.Access == "code" && r.URL.Path == EntryPath) { // the gate's own form
@@ -102,6 +102,7 @@ func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig)
 	tx.ProcessURI(r.URL.RequestURI(), r.Method, r.Proto)
 	h := r.Header.Clone()
 	takeCookie(&http.Request{Header: h}) // our session cookie: a signature can hold "--"
+	h.Del("Host")                        // HTTP/2 keeps a client "host" beside :authority; only r.Host is the app's
 	for k, vs := range h {
 		for _, v := range vs {
 			tx.AddRequestHeader(k, v)
@@ -112,29 +113,35 @@ func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig)
 		tx.AddRequestHeader("Transfer-Encoding", te)
 	}
 	if tx.ProcessRequestHeaders() == nil {
+		var err error
 		// Only a body Coraza parses (form, multipart, JSON, XML) is worth reading: the others reach no rule.
 		parsed := tx.(plugintypes.TransactionState).Variables().RequestBodyProcessor().Get() != ""
 		if parsed && r.Body != nil && r.Body != http.NoBody {
 			// read before taking a slot, so a slow client cannot hold one
-			seen, _ := io.ReadAll(io.LimitReader(r.Body, wafBodyLimit))
+			var seen []byte
+			seen, err = io.ReadAll(io.LimitReader(r.Body, wafBodyLimit))
 			r.Body = struct {
 				io.Reader
 				io.Closer
 			}{io.MultiReader(bytes.NewReader(seen), r.Body), r.Body} // the app reads what the WAF read, then the rest
-			release, ok := g.slots.take(key, g.inspectWait)
-			if !ok { // never pass uninspected; not counted toward a ban
-				g.Record(Event{IP: ip, Key: key, App: app.App, Path: eventPath(r), Reason: "waf", Detail: "inspection busy", Action: "blocked"})
-				deny(w, r, http.StatusServiceUnavailable)
-				return true
+			if err == nil {
+				release, ok := g.slots.take(key, g.inspectWait)
+				if !ok {
+					return g.unchecked(w, r, app, "inspection busy", http.StatusServiceUnavailable)
+				}
+				defer release()
+				if g.inspecting != nil {
+					g.inspecting()
+				}
+				if _, _, err = tx.ReadRequestBodyFrom(bytes.NewReader(seen)); err == nil {
+					_, err = tx.ProcessRequestBody()
+				}
 			}
-			if g.inspecting != nil {
-				g.inspecting()
-			}
-			_, _, _ = tx.ReadRequestBodyFrom(bytes.NewReader(seen))
-			_, _ = tx.ProcessRequestBody()
-			release()
 		} else {
-			_, _ = tx.ProcessRequestBody()
+			_, err = tx.ProcessRequestBody()
+		}
+		if err != nil {
+			return g.unchecked(w, r, app, "inspection error", http.StatusForbidden)
 		}
 	}
 	it := tx.Interruption()
@@ -167,11 +174,27 @@ func (g *Guard) wafFilter(w http.ResponseWriter, r *http.Request, app AppConfig)
 	return true
 }
 
+// unchecked answers a request the WAF could not inspect: "block" refuses it with code, "observe" lets
+// it pass; one event either way, never counted toward a ban.
+func (g *Guard) unchecked(w http.ResponseWriter, r *http.Request, app AppConfig, detail string, code int) bool {
+	key, ip := Key(r.RemoteAddr)
+	ev := Event{IP: ip, Key: key, App: app.App, Path: eventPath(r), Reason: "waf", Detail: detail, Action: "observed"}
+	if app.Policy.WAF != "block" {
+		g.Record(ev)
+		return false
+	}
+	ev.Action = "blocked"
+	g.Record(ev)
+	deny(w, r, code)
+	return true
+}
+
 // slots caps the body inspections running at once (CPU): inspectSlots for the box, one per key.
 type slots struct {
-	box  chan struct{}
-	mu   sync.Mutex
-	keys map[string]*keySlot // only keys with a request holding or waiting for their slot
+	box    chan struct{}
+	mu     sync.Mutex
+	keys   map[string]*keySlot // only keys with a request holding or waiting for their slot
+	queued func()              // test hook, run when a request starts waiting; nil in production
 }
 
 type keySlot struct {
@@ -191,6 +214,9 @@ func (s *slots) take(key string, wait time.Duration) (release func(), ok bool) {
 	}
 	k.users++
 	s.mu.Unlock()
+	if s.queued != nil {
+		s.queued()
+	}
 	leave := func() {
 		s.mu.Lock()
 		if k.users--; k.users == 0 {
@@ -217,19 +243,23 @@ func (s *slots) take(key string, wait time.Duration) (release func(), ok bool) {
 	return func() { <-s.box; <-k.ch; leave() }, true
 }
 
-// decidingRule is the rule that denied, or when that is the anomaly score total (949xxx) the first
-// matched rule with a severity; with its message, never the matched data.
+// decidingRule is the rule that denied; when that is the anomaly score total (949xxx), the matched
+// rule of highest severity (the first among equals) other than 949xxx. With its message, never the
+// matched data.
 func decidingRule(matched []types.MatchedRule, interrupting int) (int, string) {
-	var pick types.RuleMetadata
+	var pick, denier types.RuleMetadata
 	for _, m := range matched {
 		md := m.Rule()
-		if interrupting/1000 == 949 && md.Severity() != types.RuleSeverityUnset && md.ID()/1000 != 949 {
-			pick = md
-			break
+		if md.ID() == interrupting && denier == nil {
+			denier = md
 		}
-		if md.ID() == interrupting && pick == nil {
+		sev := md.Severity()
+		if sev != types.RuleSeverityUnset && md.ID()/1000 != 949 && (pick == nil || sev < pick.Severity()) { // 0 is emergency
 			pick = md
 		}
+	}
+	if interrupting/1000 != 949 || pick == nil {
+		pick = denier
 	}
 	if pick == nil {
 		return interrupting, ""
