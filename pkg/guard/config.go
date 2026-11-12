@@ -209,7 +209,7 @@ func New(runtimePath, dataPath, geoPath string, now func() time.Time) (*Guard, e
 	g.gate = g.accessGate
 
 	c, err := load(filepath.Join(runtimePath, FileName))
-	if err == nil {
+	if err == nil && c.Protection { // with protection off the WAF never runs
 		g.crs, err = buildWAF(c.Apps)
 	}
 	switch {
@@ -255,9 +255,11 @@ func (g *Guard) SetConfig(c Config) error {
 	if err != nil {
 		return err
 	}
-	crs, err := buildWAF(c.Apps) // slow (the whole CRS): outside the lock
-	if err != nil {
-		return err
+	var crs coraza.WAF
+	if c.Protection { // with protection off the WAF never runs
+		if crs, err = buildWAF(c.Apps); err != nil { // slow (the whole CRS): outside the lock
+			return err
+		}
 	}
 
 	g.mu.Lock()

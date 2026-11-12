@@ -52,6 +52,25 @@ func TestNoWAFWhenAllOff(t *testing.T) {
 	assert.Assert(t, w == nil)
 }
 
+// The WAF is rebuilt from guard.json at start, and not built at all with protection off.
+func TestWAFBuiltAtLoadAndOnlyWithProtection(t *testing.T) {
+	rt := t.TempDir()
+	c := startClock()
+	g, err := New(rt, t.TempDir(), "", c.now)
+	assert.NilError(t, err)
+	assert.NilError(t, g.SetConfig(wafConfig("block", nil)))
+
+	g, err = New(rt, t.TempDir(), "", c.now)
+	assert.NilError(t, err)
+	assert.Assert(t, !g.Broken())
+	assert.Equal(t, get(g.Handler(&fakeApp{}), jf, visitorIP, sqli).Code, http.StatusForbidden)
+
+	cfg := wafConfig("block", nil)
+	cfg.Protection = false
+	assert.NilError(t, g.SetConfig(cfg))
+	assert.Assert(t, g.crs == nil)
+}
+
 func TestBlockSQLi(t *testing.T) {
 	cfg := wafConfig("block", nil)
 	g, _, a, h := setup(t, &cfg)
