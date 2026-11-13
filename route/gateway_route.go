@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 	"github.com/ReCasaOS/CasaOS-Gateway/service"
 	"go.uber.org/zap"
 )
@@ -65,28 +66,44 @@ func rewriteRequestSourceIP(r *http.Request) {
 
 // serveHost proxies r when its Host is in the host table and reports whether it did.
 // The host proxy sets X-Forwarded-* itself, so rewriteRequestSourceIP is not used here.
+// The access cookie never reaches an app, on either listener.
 func (g *GatewayRoute) serveHost(w http.ResponseWriter, r *http.Request) bool {
 	proxy := g.management.GetHostProxy(r.Host)
 	if proxy == nil {
 		return false
 	}
+	guard.StripCookie(r)
 	proxy.ServeHTTP(w, r)
 	return true
 }
 
-// GetShareRoute serves host routes only; anything else is 404. No /ping, no path routes.
+// GetShareRoute serves host routes only; anything else is 404. No /ping, no path routes. The guard,
+// when there is one, filters every request first.
 func (g *GatewayRoute) GetShareRoute() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !g.serveHost(w, r) {
+			guard.NotFromApp(w)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
+	if g.management.Guard != nil {
+		h = g.management.Guard.Handler(h)
+	}
+	return h
+}
+
+// codeHost reports a host whose guard config wants an access code: it is served only on the share
+// listener, where the gate runs, never by host routing on the dashboard listener. A broken guard
+// cannot tell which hosts are protected, so every host counts as one.
+func (g *GatewayRoute) codeHost(host string) bool {
+	gd := g.management.Guard
+	return gd != nil && (gd.Broken() || gd.Config().Apps[guard.NormalizeHost(host)].Access == "code")
 }
 
 func (g *GatewayRoute) GetRoute() *http.ServeMux {
 	gatewayMux := http.NewServeMux()
 	gatewayMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if g.serveHost(w, r) {
+		if !g.codeHost(r.Host) && g.serveHost(w, r) {
 			return
 		}
 

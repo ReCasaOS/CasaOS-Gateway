@@ -6,10 +6,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/model"
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 	"github.com/ReCasaOS/CasaOS-Gateway/service"
 	"gotest.tools/v3/assert"
 )
@@ -190,4 +194,135 @@ func TestWebSocketPassesThroughHostRoute(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, line, "hi\n")
 	assert.DeepEqual(t, env.app.list(), []string{"/ws"})
+}
+
+// A host behind an access code is not host-routed on the dashboard listener: it falls through to
+// path routing as if it were not in the host table. Open hosts are unchanged.
+func TestDashboardListenerSkipsCodeHosts(t *testing.T) {
+	const openHost = "photos.mybox.box.example.org"
+	env := &shareEnv{dash: &seen{}, app: &seen{}}
+	state := service.NewState()
+	assert.NilError(t, state.SetRuntimePath(t.TempDir()))
+	management := service.NewManagementService(state)
+	dash := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { env.dash.add(r.URL.Path) }))
+	t.Cleanup(dash.Close)
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { env.app.add(r.Host + r.URL.Path) }))
+	t.Cleanup(app.Close)
+	assert.NilError(t, management.CreateRoute(&model.Route{Path: "/v1", Target: dash.URL}))
+	assert.NilError(t, management.SetHost(service.HostRoute{Host: appHost, Target: app.URL}))
+	assert.NilError(t, management.SetHost(service.HostRoute{Host: openHost, Target: app.URL}))
+	pub := httptest.NewServer(NewGatewayRoute(management).GetRoute())
+	t.Cleanup(pub.Close)
+
+	// no guard: unchanged
+	code, _ := get(t, pub.URL, appHost, "/x")
+	assert.Equal(t, code, http.StatusOK)
+	assert.DeepEqual(t, env.app.list(), []string{appHost + "/x"})
+
+	var err error
+	management.Guard, err = guard.New(t.TempDir(), t.TempDir(), "", time.Now)
+	assert.NilError(t, err)
+	pol := guard.Policy{WAF: "off", Countries: guard.Countries{Mode: "none"}, RatePerMin: 600, Ban: guard.BanRules{
+		WAFHits: 10, WAFWindowS: 600, Scan404: 100, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}}
+	assert.NilError(t, management.Guard.SetConfig(guard.Config{Secret: make([]byte, 32), Apps: map[string]guard.AppConfig{
+		appHost:  {App: "jellyfin", Access: "code", Policy: pol},
+		openHost: {App: "photos", Access: "open", Policy: pol},
+	}}))
+
+	for _, host := range []string{appHost, "JellyFin.mybox.box.example.org:80"} {
+		code, _ = get(t, pub.URL, host, "/x")
+		assert.Equal(t, code, http.StatusNotFound) // path routing: no route for /x
+		code, _ = get(t, pub.URL, host, "/v1/y")
+		assert.Equal(t, code, http.StatusOK) // path routing: the dashboard's route
+	}
+	code, _ = get(t, pub.URL, openHost, "/z")
+	assert.Equal(t, code, http.StatusOK)
+	assert.DeepEqual(t, env.app.list(), []string{appHost + "/x", openHost + "/z"})
+	assert.DeepEqual(t, env.dash.list(), []string{"/v1/y", "/v1/y"})
+}
+
+// A broken guard cannot tell which hosts are protected: the dashboard listener host-routes none.
+func TestDashboardListenerFailsClosedWhileGuardBroken(t *testing.T) {
+	env := newShareEnv(t, nil)
+	rt := t.TempDir()
+	assert.NilError(t, os.WriteFile(filepath.Join(rt, guard.FileName), []byte("{"), 0o600))
+	state := service.NewState()
+	assert.NilError(t, state.SetRuntimePath(t.TempDir()))
+	management := service.NewManagementService(state)
+	dash := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { env.dash.add(r.URL.Path) }))
+	t.Cleanup(dash.Close)
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { env.app.add(r.URL.Path) }))
+	t.Cleanup(app.Close)
+	assert.NilError(t, management.CreateRoute(&model.Route{Path: "/v1", Target: dash.URL}))
+	assert.NilError(t, management.SetHost(service.HostRoute{Host: appHost, Target: app.URL}))
+	var err error
+	management.Guard, err = guard.New(rt, t.TempDir(), "", time.Now)
+	assert.NilError(t, err)
+	assert.Assert(t, management.Guard.Broken())
+	pub := httptest.NewServer(NewGatewayRoute(management).GetRoute())
+	t.Cleanup(pub.Close)
+
+	code, _ := get(t, pub.URL, appHost, "/x")
+	assert.Equal(t, code, http.StatusNotFound)
+	code, _ = get(t, pub.URL, appHost, "/v1/y")
+	assert.Equal(t, code, http.StatusOK)
+	assert.Equal(t, len(env.app.list()), 0)
+	assert.DeepEqual(t, env.dash.list(), []string{"/v1/y"})
+}
+
+// The access cookie never reaches an app host-routed by the dashboard listener.
+func TestDashboardListenerStripsAccessCookie(t *testing.T) {
+	var appCookie string
+	env := newShareEnv(t, func(w http.ResponseWriter, r *http.Request) { appCookie = r.Header.Get("Cookie") })
+
+	for _, tc := range []struct{ in, want string }{
+		{"a=b; recasaos_access=x", "a=b"},
+		{"recasaos_access=x", ""},
+		{"a=b;c=d", "a=b;c=d"},
+	} {
+		req, err := http.NewRequest(http.MethodGet, env.pub.URL+"/x", nil)
+		assert.NilError(t, err)
+		req.Host = appHost
+		req.Header.Set("Cookie", tc.in)
+		resp, err := http.DefaultClient.Do(req)
+		assert.NilError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, resp.StatusCode, http.StatusOK)
+		assert.Equal(t, appCookie, tc.want, tc.in)
+	}
+}
+
+// Only the app's own 404s count toward a scan ban, not the Gateway's for a host it does not serve.
+func TestShareScanCountsOnlyTheAppsAnswers(t *testing.T) {
+	const ghost = "ghost.mybox.box.example.org" // in the guard config, not in the host table
+	app := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(app.Close)
+	state := service.NewState()
+	assert.NilError(t, state.SetRuntimePath(t.TempDir()))
+	management := service.NewManagementService(state)
+	assert.NilError(t, management.SetHost(service.HostRoute{Host: appHost, Target: app.URL}))
+	var err error
+	management.Guard, err = guard.New(t.TempDir(), t.TempDir(), "", time.Now)
+	assert.NilError(t, err)
+	pol := guard.Policy{WAF: "off", Countries: guard.Countries{Mode: "none"}, RatePerMin: 600, Ban: guard.BanRules{
+		WAFHits: 10, WAFWindowS: 600, Scan404: 3, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}}
+	assert.NilError(t, management.Guard.SetConfig(guard.Config{Protection: true, Apps: map[string]guard.AppConfig{
+		ghost:   {App: "ghost", Access: "open", Policy: pol},
+		appHost: {App: "jellyfin", Access: "open", Policy: pol},
+	}}))
+	share := httptest.NewServer(NewGatewayRoute(management).GetShareRoute())
+	t.Cleanup(share.Close)
+
+	for i := 0; i < 5; i++ {
+		code, _ := get(t, share.URL, ghost, "/x")
+		assert.Equal(t, code, http.StatusNotFound)
+	}
+	_, banned := management.Guard.Banned("127.0.0.1")
+	assert.Assert(t, !banned)
+
+	for i := 0; i < 3; i++ {
+		get(t, share.URL, appHost, "/x")
+	}
+	_, banned = management.Guard.Banned("127.0.0.1")
+	assert.Assert(t, banned)
 }

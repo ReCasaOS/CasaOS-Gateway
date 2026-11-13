@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -18,12 +19,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 
 	"github.com/ReCasaOS/CasaOS-Gateway/common"
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 	"github.com/ReCasaOS/CasaOS-Gateway/pkg/proxyproto"
 	"github.com/ReCasaOS/CasaOS-Gateway/route"
 	"github.com/ReCasaOS/CasaOS-Gateway/service"
@@ -190,6 +193,128 @@ func TestShareListenerServesAVisitorThroughPROXYAndTLS(t *testing.T) {
 	}
 }
 
+func TestShareListenerRefusesABlockedVisitor(t *testing.T) {
+	dir := t.TempDir()
+	def, err := common.SelfSigned(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSharePair(t, dir, "*.mybox.box.example.org")
+	picker, err := common.NewCertPicker(def, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer backend.Close()
+
+	mgmt := newShareManagement(t, dir)
+	if err := mgmt.SetHost(service.HostRoute{Host: shareHost, Target: backend.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if mgmt.Guard, err = guard.New(dir, dir, "", time.Now); err != nil {
+		t.Fatal(err)
+	}
+	ban := guard.BanRules{WAFHits: 10, WAFWindowS: 600, Scan404: 100, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}
+	if err := mgmt.Guard.SetConfig(guard.Config{Protection: true, Apps: map[string]guard.AppConfig{shareHost: {
+		App: "jellyfin", Access: "open",
+		Policy: guard.Policy{WAF: "off", Block: []string{visitor.IP.String()}, Countries: guard.Countries{Mode: "none"}, RatePerMin: 600, Ban: ban},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := serveShare(dir, picker.Config(), route.NewGatewayRoute(mgmt).GetShareRoute())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	b, err := os.ReadFile(filepath.Join(dir, common.ShareAddrFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp := request(t, dialShare(t, strings.TrimSpace(string(b)), shareHost), "GET /x HTTP/1.1\r\nHost: "+shareHost+"\r\nConnection: close\r\n\r\n")
+	if !strings.HasPrefix(resp, "HTTP/1.1 403") {
+		t.Fatalf("response = %q, want 403", resp)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("backend saw %d requests, want none", n)
+	}
+	if ev := mgmt.Guard.Events("jellyfin", "blocklist", 0); len(ev) != 1 || ev[0].IP != visitor.IP.String() {
+		t.Fatalf("events = %+v, want one blocklist event for the visitor", ev)
+	}
+}
+
+func TestShareWebSocketWithAccessCookie(t *testing.T) {
+	dir := t.TempDir()
+	def, err := common.SelfSigned(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSharePair(t, dir, "*.mybox.box.example.org")
+	picker, err := common.NewCertPicker(def, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := make(chan string, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookies <- r.Header.Get("Cookie")
+		conn, brw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+		brw.Flush()
+	}))
+	defer backend.Close()
+
+	mgmt := newShareManagement(t, dir)
+	if err := mgmt.SetHost(service.HostRoute{Host: shareHost, Target: backend.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if mgmt.Guard, err = guard.New(dir, dir, "", time.Now); err != nil {
+		t.Fatal(err)
+	}
+	secret := make([]byte, 32)
+	ban := guard.BanRules{WAFHits: 10, WAFWindowS: 600, Scan404: 100, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}
+	if err := mgmt.Guard.SetConfig(guard.Config{
+		Secret: secret, Protection: true,
+		Apps: map[string]guard.AppConfig{shareHost: {App: "jellyfin", Access: "code",
+			Policy: guard.Policy{WAF: "off", Countries: guard.Countries{Mode: "none"}, RatePerMin: 600, Ban: ban}}},
+		People: []guard.Person{{ID: "p1", Gen: 1, CodeHash: guard.CodeHash(secret, "ABCD-EFGH-JKMN"), Apps: []string{"jellyfin"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := serveShare(dir, picker.Config(), route.NewGatewayRoute(mgmt).GetShareRoute())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	b, err := os.ReadFile(filepath.Join(dir, common.ShareAddrFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := strings.TrimSpace(string(b))
+
+	upgrade := "GET /socket HTTP/1.1\r\nHost: " + shareHost + "\r\nConnection: Upgrade, close\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+	resp := request(t, dialShare(t, addr, shareHost, "http/1.1"), upgrade+"\r\n")
+	if !strings.HasPrefix(resp, "HTTP/1.1 401") {
+		t.Fatalf("without a cookie: response = %q, want 401", resp)
+	}
+
+	token := guard.SignSession(secret, "p1", 1, time.Now())
+	resp = request(t, dialShare(t, addr, shareHost, "http/1.1"), upgrade+"Cookie: a=b; recasaos_access="+token+"\r\n\r\n")
+	if !strings.HasPrefix(resp, "HTTP/1.1 101") {
+		t.Fatalf("with a cookie: response = %q, want 101", resp)
+	}
+	if got := <-cookies; got != "a=b" {
+		t.Fatalf("backend saw Cookie %q, want a=b", got)
+	}
+}
+
 func TestPublicListenerIgnoresPROXY(t *testing.T) {
 	srv := httptest.NewServer(route.NewGatewayRoute(newShareManagement(t, t.TempDir())).GetRoute())
 	defer srv.Close()
@@ -267,5 +392,113 @@ func TestShareListenerSpeaksHTTP2(t *testing.T) {
 	}
 	if got := <-xff; got != "203.0.113.9" {
 		t.Fatalf("backend saw X-Forwarded-For %q, want the visitor", got)
+	}
+}
+
+// Over HTTP/2 a protected app answers a visitor without a session itself, and with one the app never
+// sees the access cookie. A head past 32 KiB is refused by the listener.
+func TestShareHTTP2AccessGate(t *testing.T) {
+	dir := t.TempDir()
+	def, err := common.SelfSigned(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSharePair(t, dir, "*.mybox.box.example.org")
+	picker, err := common.NewCertPicker(def, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits atomic.Int32
+	cookies := make(chan string, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		cookies <- r.Header.Get("Cookie")
+	}))
+	defer backend.Close()
+
+	mgmt := newShareManagement(t, dir)
+	if err := mgmt.SetHost(service.HostRoute{Host: shareHost, Target: backend.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if mgmt.Guard, err = guard.New(dir, dir, "", time.Now); err != nil {
+		t.Fatal(err)
+	}
+	secret := make([]byte, 32)
+	ban := guard.BanRules{WAFHits: 10, WAFWindowS: 600, Scan404: 100, ScanWindowS: 60, RateStrikes: 3, RateWindowS: 600, CodeFails: 5, CodeWindowS: 600}
+	if err := mgmt.Guard.SetConfig(guard.Config{
+		Secret: secret, Protection: true,
+		Apps: map[string]guard.AppConfig{shareHost: {App: "jellyfin", Access: "code",
+			Policy: guard.Policy{WAF: "off", Countries: guard.Countries{Mode: "none"}, RatePerMin: 600, Ban: ban}}},
+		People: []guard.Person{{ID: "p1", Gen: 1, CodeHash: guard.CodeHash(secret, "ABCD-EFGH-JKMN"), Apps: []string{"jellyfin"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := serveShare(dir, picker.Config(), route.NewGatewayRoute(mgmt).GetShareRoute())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	b, err := os.ReadFile(filepath.Join(dir, common.ShareAddrFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := strings.TrimSpace(string(b))
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			ForceAttemptHTTP2: true,
+			DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+				return dialShare(t, addr, shareHost, "h2"), nil
+			},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	defer client.CloseIdleConnections()
+	get := func(hdr ...string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, "https://"+shareHost+"/x", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i+1 < len(hdr); i += 2 {
+			req.Header.Set(hdr[i], hdr[i+1])
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.ProtoMajor != 2 {
+			t.Fatalf("got %s, want HTTP/2.0", resp.Proto)
+		}
+		return resp
+	}
+
+	if resp := get(); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("without a session: %d, want 401", resp.StatusCode)
+	}
+	if resp := get("Accept", "text/html"); resp.StatusCode != http.StatusFound || !strings.HasPrefix(resp.Header.Get("Location"), guard.EntryPath) {
+		t.Fatalf("a browser without a session: %d to %q, want 302 to the entry page", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("backend saw %d requests without a session, want none", n)
+	}
+	token := guard.SignSession(secret, "p1", 1, time.Now())
+	if resp := get("Cookie", "a=b; recasaos_access="+token); resp.StatusCode != http.StatusOK {
+		t.Fatalf("with a session: %d, want 200", resp.StatusCode)
+	}
+	if got := <-cookies; got != "a=b" {
+		t.Fatalf("backend saw Cookie %q, want a=b", got)
+	}
+
+	// The status line is all that is read: the listener stops reading the head at its limit.
+	c := dialShare(t, addr, shareHost, "http/1.1")
+	if _, err := io.WriteString(c, "GET /x HTTP/1.1\r\nHost: "+shareHost+"\r\nX-Pad: "+strings.Repeat("a", 40<<10)+"\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(c).ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "HTTP/1.1 431") {
+		t.Fatalf("a 40 KiB head: %q (%v), want 431", line, err)
 	}
 }

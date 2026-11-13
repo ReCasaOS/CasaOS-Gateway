@@ -23,6 +23,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS-Gateway/common"
 	"github.com/ReCasaOS/CasaOS-Gateway/pkg"
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 	"github.com/ReCasaOS/CasaOS-Gateway/route"
 	"github.com/ReCasaOS/CasaOS-Gateway/service"
 	"go.uber.org/fx"
@@ -42,6 +43,9 @@ var (
 	_httpsServer     *http.Server
 	_httpsPortServed string
 	_gatewayAddress string
+	_dataPath       string
+	_geoPath        string
+	_guard          *guard.Guard
 	_picker         *common.CertPicker // nil when it could not be built: see the gateway hook
 
 	_managementServiceReady = make(chan struct{})
@@ -87,6 +91,9 @@ func setup() {
 		logger.Error("Failed to set runtime path", zap.Any("error", err), zap.Any(common.ConfigKeyRuntimePath, runtimePath))
 		panic(err)
 	}
+
+	_dataPath = config.GetString(common.ConfigKeyDataPath)
+	_geoPath = config.GetString(common.ConfigKeyGeoPath)
 
 	gatewayPort := config.GetString(common.ConfigKeyGatewayPort)
 	if err := _state.SetGatewayPort(gatewayPort); err != nil {
@@ -143,6 +150,15 @@ func main() {
 		pidFilename, external.ManagementURLFilename, external.StaticURLFilename, common.ShareAddrFilename,
 	)
 
+	// the guard's bans are written within 30 s, its journal alone within 10 minutes, and all once more on the way out
+	defer func() {
+		if _guard != nil {
+			if err := _guard.Flush(); err != nil {
+				logger.Error("Failed to save guard state", zap.Error(err))
+			}
+		}
+	}()
+
 	defer func() {
 		if _gateway != nil {
 			if err := _gateway.Shutdown(context.Background()); err != nil {
@@ -175,7 +191,23 @@ func main() {
 
 	app := fx.New(
 		fx.Provide(func() *service.State { return _state }),
-		fx.Provide(service.NewManagementService),
+		fx.Provide(func(state *service.State) (*service.Management, error) {
+			m := service.NewManagementService(state)
+
+			var err error
+			m.Guard, err = guard.New(state.GetRuntimePath(), _dataPath, _geoPath, time.Now)
+			_guard = m.Guard
+
+			go func() {
+				for range time.Tick(30 * time.Second) {
+					if err := m.Guard.FlushDue(); err != nil {
+						logger.Error("Failed to save guard state", zap.Error(err))
+					}
+				}
+			}()
+
+			return m, err
+		}),
 		fx.Provide(route.NewManagementRoute),
 		fx.Provide(route.NewGatewayRoute),
 		fx.Provide(route.NewStaticRoute),

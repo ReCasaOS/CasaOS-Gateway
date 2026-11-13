@@ -3,7 +3,6 @@ package service
 import (
 	"crypto/tls"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -11,6 +10,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/ReCasaOS/CasaOS-Gateway/pkg/guard"
 )
 
 const HostsFile = "hosts.json" // {"<host>":"<target>"}, same shape and mode as routes.json
@@ -27,13 +28,8 @@ var (
 
 var hostPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
-// NormalizeHost lowercases h, strips a port and a trailing dot. "" stays "".
-func NormalizeHost(h string) string {
-	if hostOnly, _, err := net.SplitHostPort(h); err == nil {
-		h = hostOnly
-	}
-	return strings.TrimSuffix(strings.ToLower(h), ".")
-}
+// NormalizeHost lowercases h, strips a port and a trailing dot. "" stays "". The guard looks hosts up with the same function.
+func NormalizeHost(h string) string { return guard.NormalizeHost(h) }
 
 func parseHostTarget(target string) (*url.URL, error) {
 	u, err := url.Parse(target)

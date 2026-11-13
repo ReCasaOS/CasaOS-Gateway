@@ -32,6 +32,7 @@ func serveShare(runtimePath string, tlsCfg *tls.Config, h http.Handler) (*http.S
 	server := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
+		MaxHeaderBytes:    32 << 10,        // HTTP/2 advertises it as its header list limit too
 		IdleTimeout:       2 * time.Minute, // the only listener facing strangers: an idle keep-alive would pin a tunnel stream
 	}
 
