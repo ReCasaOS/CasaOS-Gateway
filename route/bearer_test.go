@@ -19,10 +19,7 @@ func TestTheManagementAPITakesTheTokenBareOrAsBearer(t *testing.T) {
 	defer setup(t)(t)
 
 	// user-service stand-in: external.GetPublicKey reads its address from the runtime path
-	privateKey, publicKey, err := jwt.GenerateKeyPair()
-	assert.NilError(t, err)
-	jwks, err := jwt.GenerateJwksJSON(publicKey)
-	assert.NilError(t, err)
+	privateKey, jwks := testKeys(t) // one key for the whole package: Common keeps the key it saw for ten seconds
 	userService := httptest.NewServer(jwt.JWKSHandler(jwks))
 	defer userService.Close()
 	assert.NilError(t, os.WriteFile(filepath.Join(_state.GetRuntimePath(), external.UserServiceAddressFilename), []byte(userService.URL), 0o600))

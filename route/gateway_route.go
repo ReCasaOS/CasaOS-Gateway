@@ -126,7 +126,7 @@ func (g *GatewayRoute) GetRoute() *http.ServeMux {
 		// API V1 and V2 both read ip from request header. So the fix is effective for v1 and v2.
 		rewriteRequestSourceIP(r)
 
-		proxy.ServeHTTP(w, r)
+		g.closedForUsers(proxy).ServeHTTP(w, r)
 	})
 
 	return gatewayMux

@@ -138,9 +138,9 @@ func TestSharedHostDropsClientAddressHeaders(t *testing.T) {
 func TestLANHostKeepsPathRouting(t *testing.T) {
 	env := newShareEnv(t, nil)
 
-	code, _ := get(t, env.pub.URL, "casaos.local", "/v1/x")
+	code, _ := get(t, env.pub.URL, "casaos.local", "/v1/users/status")
 	assert.Equal(t, code, http.StatusOK)
-	assert.DeepEqual(t, env.dash.list(), []string{"/v1/x"})
+	assert.DeepEqual(t, env.dash.list(), []string{"/v1/users/status"})
 
 	code, body := get(t, env.pub.URL, "casaos.local", "/ping")
 	assert.Equal(t, code, http.StatusOK)
@@ -232,13 +232,13 @@ func TestDashboardListenerSkipsCodeHosts(t *testing.T) {
 	for _, host := range []string{appHost, "JellyFin.mybox.box.example.org:80"} {
 		code, _ = get(t, pub.URL, host, "/x")
 		assert.Equal(t, code, http.StatusNotFound) // path routing: no route for /x
-		code, _ = get(t, pub.URL, host, "/v1/y")
+		code, _ = get(t, pub.URL, host, "/v1/users/status")
 		assert.Equal(t, code, http.StatusOK) // path routing: the dashboard's route
 	}
 	code, _ = get(t, pub.URL, openHost, "/z")
 	assert.Equal(t, code, http.StatusOK)
 	assert.DeepEqual(t, env.app.list(), []string{appHost + "/x", openHost + "/z"})
-	assert.DeepEqual(t, env.dash.list(), []string{"/v1/y", "/v1/y"})
+	assert.DeepEqual(t, env.dash.list(), []string{"/v1/users/status", "/v1/users/status"})
 }
 
 // A broken guard cannot tell which hosts are protected: the dashboard listener host-routes none.
@@ -264,10 +264,10 @@ func TestDashboardListenerFailsClosedWhileGuardBroken(t *testing.T) {
 
 	code, _ := get(t, pub.URL, appHost, "/x")
 	assert.Equal(t, code, http.StatusNotFound)
-	code, _ = get(t, pub.URL, appHost, "/v1/y")
+	code, _ = get(t, pub.URL, appHost, "/v1/users/status")
 	assert.Equal(t, code, http.StatusOK)
 	assert.Equal(t, len(env.app.list()), 0)
-	assert.DeepEqual(t, env.dash.list(), []string{"/v1/y"})
+	assert.DeepEqual(t, env.dash.list(), []string{"/v1/users/status"})
 }
 
 // The access cookie never reaches an app host-routed by the dashboard listener.

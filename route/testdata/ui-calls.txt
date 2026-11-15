@@ -1,0 +1,152 @@
+# The calls the dashboard (CasaOS-UI src/) makes in the session of an account of role user, once the
+# dashboard no longer opens the message bus, the files, the terminals or any write control outside
+# the account for such a session. One call per line: METHOD /path kind. TestEveryUICallIsInTheTable
+# makes each public or base one through the Gateway with the token of a user without rights, each
+# public one with no token too, and each module one as told above its lines. The dashboard's own files (/, /index.html, /js/..., /img/...) pass as files of
+# the Gateway's "/" route and are not listed.
+
+# before signing in (router/index.js, views/Login.vue, views/Welcome.vue, service/service.js)
+GET /v1/users/status public
+POST /v1/users/login public
+POST /v1/users/2fa/verify public
+POST /v1/users/refresh public
+POST /v1/users/register public
+GET /v1/users/image public
+
+# the account (TopBar.vue, account/AccountPanel.vue, account/TwoFactorPanel.vue, wallpaper/WallpaperModal.vue)
+GET /v1/users/current base
+PUT /v1/users/current base
+PUT /v1/users/current/password base
+POST /v1/users/2fa/setup base
+POST /v1/users/2fa/enable base
+POST /v1/users/2fa/disable base
+GET /v1/users/avatar base
+PUT /v1/users/avatar base
+POST /v1/users/current/image/wallpaper base
+PUT /v1/users/current/image/wallpaper base
+DELETE /v1/users/current/image base
+
+# its preferences (Home.vue, SideBar.vue, Apps/AppSection.vue, mixins/app/Business_LinkApp.js, store/actions.js,
+# VirtualMachines/VmPage.vue the order of the VMs, with the vm right)
+GET /v1/users/current/custom/system base
+POST /v1/users/current/custom/system base
+GET /v1/users/current/custom/wallpaper base
+POST /v1/users/current/custom/wallpaper base
+GET /v1/users/current/custom/widgets_config base
+POST /v1/users/current/custom/widgets_config base
+GET /v1/users/current/custom/app_favorites base
+POST /v1/users/current/custom/app_favorites base
+GET /v1/users/current/custom/app_order base
+POST /v1/users/current/custom/app_order base
+GET /v1/users/current/custom/link base
+POST /v1/users/current/custom/link base
+GET /v1/users/current/custom/shortcut base
+POST /v1/users/current/custom/shortcut base
+DELETE /v1/users/current/custom/link base
+GET /v1/users/current/custom/vm_order base
+POST /v1/users/current/custom/vm_order base
+
+# the apps (Apps/AppSection.vue, Apps/ContainerDetailPanel.vue, settings/AppLaunchModal.vue)
+GET /v2/app_management/web/appgrid base
+GET /v2/app_management/compose base
+GET /v2/app_management/container/immich/detail base
+
+# Statistics of the apps (Stats/StatsPage.vue, Apps/AppSection.vue memory poller)
+GET /v2/app_management/stats base
+GET /v2/app_management/stats/app:immich base
+GET /v2/app_management/stats/app:immich/alerts base
+
+# Logs of the apps (Logs/entry.js probe, Logs/LogsPage.vue, Logs/LogStream.vue)
+GET /v2/app_management/logs/settings base
+GET /v2/app_management/logs/apps base
+GET /v2/app_management/logs base
+GET /v2/app_management/logs/events base
+GET /v2/app_management/logs/export base
+GET /v2/app_management/logs/stream base
+
+# The modules: the reads a right opens (kind module:<right>), each made only by a session that has the right.
+# TestEveryUICallIsInTheTable makes each with that right alone (it passes) and with every other right
+# alone and none (refused). The VM id vm1 stands for any.
+
+# system (widgets/Cpu.vue, widgets/Network.vue, Home.vue getHardwareInfo, dashboard/HealthStrip.vue tiles,
+# Stats/StatsPage.vue core column)
+GET /v1/sys/utilization module:system
+GET /v1/container/usage module:system
+GET /v1/sys/stats module:system
+GET /v1/sys/stats/host module:system
+GET /v1/sys/stats/host/alerts module:system
+
+# storage (widgets/Disks.vue RAID line, dashboard/HealthStrip.vue storage card and Needs attention)
+GET /v1/disks module:storage
+GET /v1/disks/raid module:storage
+GET /v1/disks/snapraid module:storage
+GET /v1/disks/zfs module:storage
+GET /v1/storage module:storage
+
+# vm (VirtualMachines/entry.js probe and tiles, VmTile.vue, VmPage.vue list, StatsPage.vue virt column)
+GET /v2/virt_management/host module:vm
+GET /v2/virt_management/vms module:vm
+GET /v2/virt_management/vms/vm1 module:vm
+GET /v2/virt_management/stats module:vm
+GET /v2/virt_management/stats/vm1 module:vm
+GET /v2/virt_management/stats/vm1/alerts module:vm
+
+# backups (service/backupStatus.js app card marks, dashboard/HealthStrip.vue backups card)
+GET /v2/app_management/backup/runs module:backups
+GET /v2/app_management/backup/schedules module:backups
+GET /v2/app_management/backup/destinations module:backups
+GET /v2/app_management/backup/running module:backups
+GET /v2/app_management/operations module:backups
+
+# fleet (dashboard/HealthStrip.vue fleet card and Needs attention)
+GET /v1/fleet module:fleet
+
+# Left out on purpose: the dashboard makes these calls today in any session, and a user session
+# no longer makes them once the dashboard follows the role and the rights.
+#
+# The message bus: the socket (plugins/socket.js, GET /v2/message_bus/socket.io/) and the events
+#   the dashboard posts ($messageBus, POST /v2/message_bus/event/casaos-ui). The bus is box-wide:
+#   a user session refreshes its lists on a timer instead.
+# The notices (CoreService.vue): GET /v2/users/events, DELETE /v2/users/event/{uuid}: the bus's
+#   events kept for the whole box, not per account.
+# The files: /v1/file*, /v1/folder*, /v1/batch*, /v1/image, /v1/driver, /v1/cloud, /v1/samba*,
+#   /v3/file, /v2/casaos/file/upload, the file socket /v1/file/ws.
+# Terminals and consoles: /v1/sys/wsssh, /v1/container/{id}/terminal, the VM console.
+# System, settings of the box (TopBar.vue mount, CoreService.vue): GET /v1/gateway/port,
+#   /v1/gateway/httpsport, /v1/usb/usb-auto-mount, /v1/sys/telemetry, /v1/sys/autoupdate,
+#   /v1/sys/alerts, /v1/sys/modules, /v1/sys/os, /v1/sys/hardware, PUT /v1/users/login-style.
+# GET /v1/sys/version (TopBar.vue checkVersion, WallpaperModal.vue before an upload, Home.vue after
+#   an update): it reads the release feed from the network when its cache is cold. The wallpaper
+#   upload must not wait for it in a user session.
+# What the modules keep for the owner, even with the right (the module rows open reads only):
+#   system: /v1/sys/version*, /v1/sys/telemetry, /v1/sys/autoupdate, /v1/sys/packages*, /v1/sys/hardware
+#     and /v1/sys/os (no user's screen reads them), the OS readiness and upgrade reports (they run apt
+#     and read the network), /v1/sys/logs, /v1/sys/wsssh,
+#     the notices; GET /v2/app_management/images/dangling (widgets/Disks.vue): it only feeds the
+#     owner's "Free up" button.
+#   storage: /v2/local_storage/* (mounts and merges, network shares), /v1/disks/usb, /v1/disks/size,
+#     /v1/disks/zfs/snapshots and /v1/disks/zfs/io (the Storage manager, the owner's), /v1/usb/*,
+#     /v1/disks/unreadable (it runs df on every call, uncached: the health strip asks it for the owner).
+#   vm: /v2/virt_management/vms/{id}/console (the VNC socket), /images (the ISO files on the box),
+#     /images/downloads (addresses fetched from the network), /storage?path= (any folder of the
+#     box), /host/usb. The VM page shows a user the list, without the detail pane.
+#   backups: /backup/destinations/{name}/restic/password and /restic, /backup/destinations/{name}/runs
+#     and the browse and files of a run (the files of the apps), /backup/exclusions,
+#     /backup/verifications, /backup/signin*. The Backups dialog is the owner's.
+#   fleet: /v1/fleet/boxes/{id}/relay/* (every box's own routes, through the tunnel),
+#     /v1/fleet/backups, /v1/fleet/remote, /v1/fleet/tunnel's other side. The Fleet card and page
+#     read every box through the relay and stay the owner's; so do the other boxes' logs in Logs.
+# GET /v2/app_management/web/frame-check?url= (Apps/AppIframe.vue): app management makes a request
+#   of its own to the address given. The frame stays as it is when the check fails.
+# The app launcher (views/AppLauncherCheck.vue): PUT /v2/app_management/compose/{id}/status starts
+#   the app, then GET /v1/container/{id}/state and GET /v2/app_management/compose/{id}/healthcheck
+#   poll it. A user session opens an app without starting it.
+# Writes on the apps (Apps/AppCard.vue, Apps/AppPanel.vue, Logs/LogsPage.vue, Stats/AlertSettingsDialog.vue):
+#   install, settings, status, uninstall, clone, tips, update checks, PUT logs/settings, PUT stats alerts,
+#   and the reads that only feed them: GET /v2/app_management/compose/{id} (and /env),
+#   GET /v2/app_management/apps/{id}, GET /v1/container/networks, GET /v1/container/{id},
+#   GET /v2/app_management/info.
+# The accounts screen and the visibility of the apps (settings/AccountsModal.vue, service/visibility.js):
+#   /v1/users (GET, POST), DELETE /v1/users/{id}, /v2/app_management/visibility*: the admin's, the entries of
+#   apps no longer installed included (GET /v2/app_management/visibility-orphans, DELETE /v2/app_management/visibility/{app}).
+# Public sharing and its protection (service/publicShare.js, service/shareGuard.js): /v1/share*.
