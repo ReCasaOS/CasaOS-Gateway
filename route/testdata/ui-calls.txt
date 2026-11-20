@@ -109,8 +109,8 @@ GET /v1/fleet module:fleet
 #   a user session refreshes its lists on a timer instead.
 # The notices (CoreService.vue): GET /v2/users/events, DELETE /v2/users/event/{uuid}: the bus's
 #   events kept for the whole box, not per account.
-# The files: /v1/file*, /v1/folder*, /v1/batch*, /v1/image, /v1/driver, /v1/cloud, /v1/samba*,
-#   /v3/file, /v2/casaos/file/upload, the file socket /v1/file/ws.
+# The files, but for an account given folders (below, kind files): the trash /v1/file/trash*, the
+#   transfer /v1/file/ws and /v1/file/peers, /v1/batch/{id}/task, /v1/driver, /v1/cloud, /v1/samba*.
 # Terminals and consoles: /v1/sys/wsssh, /v1/container/{id}/terminal, the VM console.
 # System, settings of the box (TopBar.vue mount, CoreService.vue): GET /v1/gateway/port,
 #   /v1/gateway/httpsport, /v1/usb/usb-auto-mount, /v1/sys/telemetry, /v1/sys/autoupdate,
@@ -150,3 +150,24 @@ GET /v1/fleet module:fleet
 #   /v1/users (GET, POST), DELETE /v1/users/{id}, /v2/app_management/visibility*: the admin's, the entries of
 #   apps no longer installed included (GET /v2/app_management/visibility-orphans, DELETE /v2/app_management/visibility/{app}).
 # Public sharing and its protection (service/publicShare.js, service/shareGuard.js): /v1/share*.
+
+# Files, for an account given folders of Files (FilesPage, components/filebrowser, mixins/mixin.js): each
+# call is made by such an account, and refused to one without folders.
+GET /v1/file/roots files
+GET /v1/folder files
+GET /v1/folder/size files
+GET /v1/folder/count files
+GET /v1/file files
+GET /v3/file files
+GET /v1/file/content files
+GET /v1/batch files
+GET /v1/image files
+POST /v1/file files
+PUT /v1/file files
+PUT /v1/file/name files
+POST /v1/folder files
+PUT /v1/folder/name files
+GET /v2/casaos/file/upload files
+POST /v2/casaos/file/upload files
+POST /v1/batch/task files
+DELETE /v1/batch files

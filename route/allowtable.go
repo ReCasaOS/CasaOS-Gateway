@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"path"
 	"strings"
+
+	"github.com/ReCasaOS/CasaOS-Common/external"
 )
 
 // kind says who may make the calls of a row of allowTable.
@@ -12,6 +14,10 @@ type kind string
 const (
 	public kind = "public" // anybody, with or without a token
 	base   kind = "base"   // any signed-in account
+	// files is an account given at least one folder of Files (external.FilesRight). The
+	// Gateway does not see the paths of a call (bodies, multipart uploads): the core confines
+	// every path to the account's folders, and a write to its read-and-write ones.
+	files kind = "files"
 )
 
 // module is a row opened by the right of that name.
@@ -96,6 +102,29 @@ var allowTable = []rule{
 	{"GET", "/v2/app_management/backup/running", module("backups")},      // what runs now, hidden apps left out
 	{"GET", "/v2/app_management/operations", module("backups")},          // what runs on the apps now, hidden apps left out
 	{"GET", "/v1/fleet", module("fleet")},                                // the role and the boxes, never a key; no relay call
+
+	// Files, in the folders the owner gave the account (CasaOS#168). Kept out: the trash (it holds
+	// what every account deleted), the transfer between devices (/v1/file/ws, /peers), cancelling
+	// a copy (one id, or 0 for every copy of the box), the cloud drives, Samba, the search, and
+	// the older upload (/v1/file/upload): the dashboard sends files by /v2/casaos/file/upload.
+	{"GET", "/v1/file/roots", files},          // the account's folders, and which it may write
+	{"GET", "/v1/folder", files},              // a folder's entries
+	{"GET", "/v1/folder/size", files},         // a folder's size
+	{"GET", "/v1/folder/count", files},        // how many entries
+	{"GET", "/v1/file", files},                // one file, downloaded
+	{"GET", "/v3/file", files},                // one file, downloaded (token in the query)
+	{"GET", "/v1/file/content", files},        // a text file, read
+	{"GET", "/v1/batch", files},               // files and folders, downloaded as one archive
+	{"GET", "/v1/image", files},               // a thumbnail
+	{"POST", "/v1/file", files},               // a new file
+	{"PUT", "/v1/file", files},                // a text file, saved
+	{"PUT", "/v1/file/name", files},           // a file renamed
+	{"POST", "/v1/folder", files},             // a new folder
+	{"PUT", "/v1/folder/name", files},         // a folder renamed
+	{"GET", "/v2/casaos/file/upload", files},  // the dashboard's uploader: a chunk, asked about
+	{"POST", "/v2/casaos/file/upload", files}, // the dashboard's uploader: a chunk
+	{"POST", "/v1/batch/task", files},         // a copy or a move
+	{"DELETE", "/v1/batch", files},            // a deletion, or a move to the trash
 }
 
 func matches(pattern, p string) bool {
@@ -128,6 +157,6 @@ func isPublic(k kind) bool { return k == public }
 func userMayCall(method, p string, rights map[string]bool) bool {
 	return allowedBy(method, p, func(k kind) bool {
 		name, isModule := strings.CutPrefix(string(k), "module:")
-		return k == public || k == base || isModule && rights[name]
+		return k == public || k == base || isModule && rights[name] || k == files && rights[external.FilesRight]
 	})
 }
