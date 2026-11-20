@@ -3,7 +3,7 @@ module github.com/ReCasaOS/CasaOS-Gateway
 go 1.26.8
 
 require (
-	github.com/ReCasaOS/CasaOS-Common v0.4.34
+	github.com/ReCasaOS/CasaOS-Common v0.4.35
 	github.com/corazawaf/coraza-coreruleset/v4 v4.25.0
 	github.com/corazawaf/coraza/v3 v3.8.1
 	github.com/labstack/echo-jwt/v4 v4.4.0
@@ -77,5 +77,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gotest.tools/v3 v3.5.1
 )
-
-replace github.com/ReCasaOS/CasaOS-Common => ../_af-common
