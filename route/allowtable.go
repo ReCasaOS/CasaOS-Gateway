@@ -105,7 +105,8 @@ var allowTable = []rule{
 
 	// Files, in the folders the owner gave the account (CasaOS#168). Kept out: the trash (it holds
 	// what every account deleted), the transfer between devices (/v1/file/ws, /peers), cancelling
-	// a copy (one id, or 0 for every copy of the box), the cloud drives, Samba, the search.
+	// a copy (one id, or 0 for every copy of the box), the cloud drives, Samba, the search, and
+	// the older upload (/v1/file/upload): the dashboard sends files by /v2/casaos/file/upload.
 	{"GET", "/v1/file/roots", files},          // the account's folders, and which it may write
 	{"GET", "/v1/folder", files},              // a folder's entries
 	{"GET", "/v1/folder/size", files},         // a folder's size
@@ -120,8 +121,6 @@ var allowTable = []rule{
 	{"PUT", "/v1/file/name", files},           // a file renamed
 	{"POST", "/v1/folder", files},             // a new folder
 	{"PUT", "/v1/folder/name", files},         // a folder renamed
-	{"GET", "/v1/file/upload", files},         // an upload's chunk, asked about
-	{"POST", "/v1/file/upload", files},        // an upload's chunk
 	{"GET", "/v2/casaos/file/upload", files},  // the dashboard's uploader: a chunk, asked about
 	{"POST", "/v2/casaos/file/upload", files}, // the dashboard's uploader: a chunk
 	{"POST", "/v1/batch/task", files},         // a copy or a move

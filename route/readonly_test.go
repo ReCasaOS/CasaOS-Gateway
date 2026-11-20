@@ -544,6 +544,7 @@ func TestModuleRights(t *testing.T) {
 		{folderID, "DELETE", "/v1/file/trash/all", 403},
 		{folderID, "GET", "/v1/file/ws", 403},
 		{folderID, "GET", "/v1/file/peers", 403},
+		{folderID, "POST", "/v1/file/upload", 403},
 		{folderID, "DELETE", "/v1/batch/0/task", 403},
 		{folderID, "GET", "/v1/samba/shares", 403},
 		{folderID, "GET", "/v1/cloud", 403},
