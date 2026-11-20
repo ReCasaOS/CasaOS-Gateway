@@ -18,7 +18,7 @@ func TestEveryUICallIsInTheTable(t *testing.T) {
 
 	env := newReadOnlyEnv(t)
 	user := map[string]string{"Authorization": env.token(t, userID)}
-	calls := 0
+	calls, filesCalls := 0, 0
 	modules := map[string]int{}
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -48,6 +48,18 @@ func TestEveryUICallIsInTheTable(t *testing.T) {
 			modules[right]++
 			continue
 		}
+		// a call of Files: an account given a folder makes it, one without none does
+		if k == "files" {
+			before := len(env.hits.list())
+			assert.Equal(t, env.call(t, method, p, map[string]string{"Authorization": env.token(t, folderID)}), 200, line)
+			assert.Equal(t, len(env.hits.list()), before+1, line)
+			for right, id := range rightIDs {
+				assert.Equal(t, env.call(t, method, p, map[string]string{"Authorization": env.token(t, id)}), 403, line+" with "+right)
+			}
+			assert.Equal(t, env.call(t, method, p, nil), 401, line)
+			filesCalls++
+			continue
+		}
 		assert.Assert(t, k == "public" || k == "base", line)
 
 		before := len(env.hits.list())
@@ -64,4 +76,5 @@ func TestEveryUICallIsInTheTable(t *testing.T) {
 	for right := range rightIDs {
 		assert.Assert(t, modules[right] > 0, "no call of the module %s", right)
 	}
+	assert.Assert(t, filesCalls > 0, "no call of Files")
 }

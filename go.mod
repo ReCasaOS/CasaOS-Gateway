@@ -77,3 +77,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gotest.tools/v3 v3.5.1
 )
+
+replace github.com/ReCasaOS/CasaOS-Common => ../_af-common

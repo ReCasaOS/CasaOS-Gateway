@@ -36,6 +36,9 @@ const (
 // rightIDs is a user holding that one right, for each right.
 var rightIDs = map[string]int{"storage": 10, "vm": 11, "backups": 12, "fleet": 13, "system": 14}
 
+// folderID is a user given one folder of Files, and no right.
+const folderID = 15
+
 var (
 	keyOnce  sync.Once
 	signKey  *ecdsa.PrivateKey
@@ -92,6 +95,8 @@ func newReadOnlyEnv(t *testing.T) *readOnlyEnv {
 			_, _ = w.Write([]byte(`{"success":200,"data":"user","rights":["fleet"]}`))
 		case "14":
 			_, _ = w.Write([]byte(`{"success":200,"data":"user","rights":["system"]}`))
+		case "15":
+			_, _ = w.Write([]byte(`{"success":200,"data":"user","rights":[],"folders":[{"path":"/DATA/Kids","write":true}]}`))
 		case "4":
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"success":10006,"message":"User does not exist"}`))
@@ -532,6 +537,18 @@ func TestModuleRights(t *testing.T) {
 		method, path string
 		want         int
 	}{
+		{folderID, "GET", "/v1/folder", 200},
+		{folderID, "DELETE", "/v1/batch", 200},
+		{folderID, "GET", "/v1/file/trash", 403},
+		{folderID, "POST", "/v1/file/trash/restore", 403},
+		{folderID, "DELETE", "/v1/file/trash/all", 403},
+		{folderID, "GET", "/v1/file/ws", 403},
+		{folderID, "GET", "/v1/file/peers", 403},
+		{folderID, "DELETE", "/v1/batch/0/task", 403},
+		{folderID, "GET", "/v1/samba/shares", 403},
+		{folderID, "GET", "/v1/cloud", 403},
+		{folderID, "GET", "/v1/disks", 403},
+		{rightIDs["storage"], "GET", "/v1/folder", 403},
 		{rightIDs["storage"], "GET", "/v1/disks", 200},
 		{rightIDs["storage"], "GET", "/v1/storage", 200},
 		{rightIDs["storage"], "GET", "/v2/virt_management/vms", 403},

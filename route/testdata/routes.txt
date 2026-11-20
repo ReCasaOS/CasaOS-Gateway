@@ -310,6 +310,7 @@ GET /v2/casaos/health/logs
 GET /v2/casaos/health/ports
 GET /v2/casaos/health/services
 GET /v2/casaos/zt/info
+GET /v3/file
 PUT /v2/casaos/zt/{network_id}/status
 GET /v2/local_storage/merge
 POST /v2/local_storage/merge
