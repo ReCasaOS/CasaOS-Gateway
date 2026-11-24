@@ -46,6 +46,7 @@ var allowTable = []rule{
 	{"GET", "/v1/fleet/tunnel", public},                  // a member box's tunnel, which proves itself with its own code
 	{"GET", "/v1/recover/*/*", public},                   // the browser's way back from a cloud sign-in (type/state), checked against the box's state
 	{"POST", "/v2/app_management/git/*/webhook", public}, // a git forge's delivery, which proves itself with the app's secret
+	{"POST", "/v2/mcp/server", public},                   // the MCP endpoint, which checks its own token
 
 	// the account itself
 	{"GET", "/v1/users/current", base},
