@@ -121,3 +121,21 @@ func TestModuleRowsAreKnownReadsTheDashboardMakes(t *testing.T) {
 	}
 	assert.Assert(t, rows > 0)
 }
+
+// The MCP endpoint checks its own token, so no session token is asked; the rest of the module stays closed.
+func TestMCPServerIsPublic(t *testing.T) {
+	env := newReadOnlyEnv(t)
+	before := len(env.hits.list())
+	assert.Equal(t, env.call(t, "POST", "/v2/mcp/server", nil), 200)
+	assert.Equal(t, env.call(t, "POST", "/v2/mcp/server", map[string]string{"Authorization": env.token(t, userID)}), 200)
+	assert.Equal(t, len(env.hits.list()), before+2) // both reached the module
+}
+
+func TestMCPTokensStayClosed(t *testing.T) {
+	env := newReadOnlyEnv(t)
+	before := len(env.hits.list())
+	assert.Equal(t, env.call(t, "GET", "/v2/mcp/tokens", nil), 401)
+	assert.Equal(t, env.call(t, "GET", "/v2/mcp/tokens", map[string]string{"Authorization": env.token(t, userID)}), 403)
+	assert.Equal(t, env.call(t, "GET", "/v2/mcp/status", map[string]string{"Authorization": env.token(t, userID)}), 403)
+	assert.Equal(t, len(env.hits.list()), before) // none reached the module
+}
