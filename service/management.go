@@ -123,6 +123,14 @@ func (g *Management) GetRoutes() []*model.Route {
 	return routes
 }
 
+// HasRoute is true when path is a route key itself, not merely under one.
+func (g *Management) HasRoute(path string) bool {
+	g.pathMu.RLock()
+	defer g.pathMu.RUnlock()
+	_, ok := g.pathReverseProxyMap[path]
+	return ok
+}
+
 func (g *Management) GetProxy(path string) *httputil.ReverseProxy {
 	g.pathMu.RLock()
 	defer g.pathMu.RUnlock()
