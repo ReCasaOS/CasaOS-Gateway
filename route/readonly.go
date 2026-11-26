@@ -29,6 +29,9 @@ var rightsOf = external.RightsOf
 //     at once, token or not, with no lookup: the dashboard sends its last token, expired or not,
 //     with the refresh and the status it calls before signing in. So does a CORS preflight with
 //     no token: the service's CORS layer answers it, before any handler.
+//   - So does a GET or HEAD of a module's page, exactly R or R/ where R is the gateway_route of a
+//     manifest in moduleManifestDir that the Gateway proxies and no core route (isModulePage): the
+//     dashboard opens it in a new tab, which sends no token. Anything deeper is judged as below.
 //   - A request of the box's own services (loopback and the internal secret) passes.
 //   - Anything else needs a valid access token: none, or none valid, is 401. A token the Gateway
 //     cannot check (the key does not read) or whose role it cannot know (user-service has never
@@ -53,7 +56,8 @@ func (g *GatewayRoute) closedForUsers(next http.Handler) http.Handler {
 			}
 		}
 		preflight := r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" && len(tokens) == 0
-		if tableApplies && allowedBy(r.Method, judged, isPublic) || preflight || g.isStaticFile(r) {
+		if tableApplies && allowedBy(r.Method, judged, isPublic) || preflight || g.isStaticFile(r) ||
+			tableApplies && g.isModulePage(r.Method, judged) {
 			next.ServeHTTP(w, r)
 			return
 		}
